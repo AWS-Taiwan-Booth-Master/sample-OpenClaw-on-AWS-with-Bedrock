@@ -1,32 +1,60 @@
 # Moltbot AWS Bedrock 部署方案
 
-> 在 AWS 上使用 Amazon Bedrock 部署 [Moltbot](https://github.com/moltbot/moltbot)（原 Clawdbot）。企业级、安全、一键部署。
+> 在 AWS 上使用 Amazon Bedrock 部署 [Moltbot](https://github.com/moltbot/moltbot)（原 Clawdbot）。无需管理 Anthropic/OpenAI/DeepSeek API 密钥，使用 Graviton ARM 处理器，企业级、安全、一键部署。
 
 [English](README.md) | 简体中文
 
 ## 这是什么？
 
-[Moltbot](https://github.com/moltbot/moltbot)（原 Clawdbot）是一个开源的个人 AI 助手，可以连接 WhatsApp、Slack、Discord 等平台。本项目提供 **AWS 原生部署方案**，使用 Amazon Bedrock 敏捷使用 Anthropic/AWS Nova/DeepSeek API Key。
+[Moltbot](https://github.com/moltbot/moltbot)（原 Clawdbot）是一个开源的个人 AI 助手，可以连接 WhatsApp、Slack、Discord 等平台。本项目提供 **AWS 原生部署方案**，使用 Amazon Bedrock 统一 API，无需管理多个 AI 提供商的 API 密钥。
 
 ## 为什么选择 AWS 原生版？
 
 | 原版 Moltbot | 本项目 |
 |---------------|--------|
-| Anthropic API Key | **Amazon Bedrock + IAM** |
-| 单一模型 | **多模型支持（Claude、Nova、DeepSeek 等）** |
+| 多个 API 密钥（Anthropic/OpenAI 等） | **Amazon Bedrock 统一 API + IAM** |
+| 单一模型，固定成本 | **8 个模型：Nova Pro（便宜 73%）作为默认** |
+| x86 硬件，固定规格 | **x86/ARM 灵活配置，推荐 Graviton（省 20-40%）** |
 | Tailscale VPN | **SSM Session Manager** |
 | 手动配置 | **CloudFormation 一键部署** |
 | 无审计日志 | **CloudTrail 自动审计** |
 | 公网访问 | **VPC 端点（私有网络）** |
 
+### 核心优势
+
+**1. 多模型灵活性与成本优势**
+- **Nova Pro 默认**：$0.80/$3.20 每百万 tokens，比 Claude 的 $3/$15 便宜 73%
+- **8 个模型可选**：一个参数切换 Nova、Claude、DeepSeek、Llama
+- **智能路由**：简单任务用 Nova Lite，复杂推理用 Claude Sonnet
+- **无供应商锁定**：切换模型无需改代码或重新部署
+
+**2. 灵活的实例配置与 Graviton 优势（推荐）**
+- **x86 和 ARM 双支持**：可选择 t3/c5（x86）或 t4g/c7g（Graviton ARM）
+- **推荐 Graviton**：性价比比 x86 高 20-40%
+- **成本示例**：t4g.medium（$24/月）vs t3.medium（$30/月）- 相同配置，节省 20%
+- **灵活配置**：从 t4g.small（$12/月）到 c7g.xlarge（$108/月）按需选择
+- **节能环保**：Graviton 能耗比 x86 低 70%
+
+**3. 企业级安全与合规**
+- **零密钥管理**：一个 IAM 角色替代多个供应商密钥
+- **完整审计追踪**：CloudTrail 记录每次 Bedrock API 调用
+- **私有网络**：VPC Endpoints 保证流量在 AWS 内网
+- **安全访问**：SSM Session Manager，无需公网端口
+
+**4. 云原生自动化**
+- **一键部署**：CloudFormation 自动化 VPC、IAM、EC2、Bedrock 配置
+- **基础设施即代码**：可重复、版本控制的部署
+- **多区域支持**：在 4 个区域使用相同配置部署
+
 ## 核心优势
 
-- 🔐 **无需管理 API Key** - IAM 角色自动认证
-- 🤖 **多模型支持** - 无需改代码即可切换 Claude、Nova、DeepSeek
+- 🚀 **Graviton ARM 处理器**：性价比比 x86 高 20-40%
+- 💰 **Nova Pro 默认**：比 Claude 便宜 73%（$0.80 vs $3 每百万 tokens），支持多模态
+- 🔐 **零密钥管理** - 一个 IAM 角色替代多个 API 密钥（Anthropic、OpenAI、DeepSeek）
+- 🤖 **8 个模型即用** - 无需改代码即可切换 Nova、Claude、DeepSeek、Llama
 - 🏢 **企业级** - 完整的 CloudTrail 审计日志和合规支持
-- 🚀 **一键部署** - CloudFormation 自动化所有配置
+- ⚡ **一键部署** - CloudFormation 8 分钟自动化所有配置
 - 🔒 **安全访问** - SSM Session Manager，无需暴露公网端口
-- 💰 **成本透明** - AWS 原生成本追踪和优化
 
 ## 快速开始
 
@@ -83,7 +111,7 @@ aws cloudformation wait stack-create-complete \
   --stack-name clawdbot-bedrock \
   --region us-west-2
 ```
-https://github.com/aws-samples/sample-Moltbot-on-AWS-with-Bedrock/blob/main/README_CN.md
+
 ### 访问 Clawdbot
 
 ![CloudFormation 输出](images/20260128-105244.jpeg)
@@ -115,35 +143,6 @@ http://localhost:18789/?token=<你的token>
 ## 如何使用 Clawdbot
 
 ### 连接消息平台
-#### Telegram (配置示例)
-
-1. **通过BotFather配置交互机器人**：创建 Telegram Bot 打开 Telegram，搜索 `@BotFather`，发送 `/newbot`。按提示操作： 1.  Bot 的名字 2. 设置Bot用户名（必须以 `bot` 结尾，比如 `jiade_clawd_bot`）  BotFather 会返回 Token 例如：
-123412344321:ABC1234567890def1234567890GHIjklMNOpqrSTUvwxYZ
-   
-2. **在 Web UI 配置 Telegram channel**：添加channels模板段如图，点击保存和reload即可完成配置生效加载
-
-```bash
-"channels": {
-    "telegram": {
-      "enabled": true,
-      "botToken": "你的Bot Token",
-      "dmPolicy": "pairing"
-    }
-  }
-```
-
-3. **客户端配置校验码**：回到你创建的Telegram机器人，在配置pairing的情况下，第一次给 Bot 发消息，它会回复配对码,例如：
-
-```bash
-Pairing code: GE4BQTGD
-Your Telegram user id: 123456789
-```
-
-4. **服务器端校验**：通过 SSM 命令免登录校验 或者 登录到 EC2 服务器 键入命令校验： ``clawdbot pairing approve telegram <你的 Pairing code>``
-
-   
-![CloudFormation Outputs](images/20260128-144241.jpg)
-
 
 #### WhatsApp（推荐）
 
@@ -156,6 +155,17 @@ Your Telegram user id: 123456789
 
 **提示**：建议使用专用手机号，或启用 `selfChatMode`。
 
+#### Telegram
+
+1. 创建 Bot：与 [@BotFather](https://t.me/botfather) 对话
+   ```
+   /newbot
+   选择名称：My Clawdbot
+   选择用户名：my_clawdbot_bot
+   ```
+2. 复制 Bot Token（格式：`123456:ABC-DEF...`）
+3. 在 Web UI 配置 Telegram channel
+4. 测试：向你的 bot 发送 `/start`
 
 #### Discord
 
