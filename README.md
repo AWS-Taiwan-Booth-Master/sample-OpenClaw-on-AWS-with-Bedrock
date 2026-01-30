@@ -18,7 +18,7 @@ English | [简体中文](README_CN.md)
 |-------------------|--------------|
 | Multiple API keys (Anthropic/OpenAI/etc.) | **Amazon Bedrock unified API + IAM** |
 | Single model, fixed cost | **8 models available, Nova 2 Lite (90% cheaper vs Anthropic)** |
-| x86 hardware, fixed specs | **x86/ARM/Mac flexible, Graviton recommended (20-40% savings)** |
+| x86 hardware, fixed specs | **x86/ARM/Mac flexible, (Graviton Default, 20-40% savings)** |
 | Tailscale VPN | **SSM Session Manager** |
 | Manual setup | **CloudFormation (1-click)** |
 | No audit logs | **CloudTrail (automatic)** |
