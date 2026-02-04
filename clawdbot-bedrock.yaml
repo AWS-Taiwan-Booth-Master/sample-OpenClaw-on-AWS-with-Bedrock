@@ -259,6 +259,19 @@ Resources:
                   - 'bedrock:ListFoundationModels'
                   - 'bedrock:GetFoundationModel'
                 Resource: '*'
+        - PolicyName: MarketplaceAccessPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: MarketplaceFor3pModels
+                Effect: Allow
+                Action:
+                  - 'aws-marketplace:ViewSubscriptions'
+                  - 'aws-marketplace:Subscribe'
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'aws:CalledViaLast': 'bedrock.amazonaws.com'
         - PolicyName: SSMParameterPolicy
           PolicyDocument:
             Version: '2012-10-17'
