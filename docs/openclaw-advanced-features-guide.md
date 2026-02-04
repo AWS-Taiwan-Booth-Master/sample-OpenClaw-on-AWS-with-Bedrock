@@ -12,7 +12,9 @@
 6. [Workspace 設定](#workspace-設定)
 7. [Multi-Channel 路由](#multi-channel-路由)
 8. [Cron 排程任務](#cron-排程任務)
-9. [安全與權限](#安全與權限)
+9. [Canvas 視覺化輸出](#canvas-視覺化輸出)
+10. [Node 遠端控制](#node-遠端控制)
+11. [安全與權限](#安全與權限)
 
 ---
 
@@ -489,6 +491,244 @@ clawdbot cron remove <job-id>
 
 ---
 
+## Canvas 視覺化輸出
+
+### Canvas 概念
+
+Canvas 是 OpenClaw 的視覺化輸出功能，讓 Agent 可以生成和展示互動式 HTML 內容。Agent 可以創建圖表、報告、Dashboard 等視覺化內容，並透過 Web UI 或 Node App 查看。
+
+### Canvas 架構
+
+```mermaid
+flowchart LR
+    subgraph Gateway["Gateway Server"]
+        Agent["🤖 Agent"]
+        Canvas["📁 ~/clawd/canvas/"]
+    end
+    
+    subgraph Clients["客戶端"]
+        WebUI["🌐 Web UI"]
+        NodeApp["📱 Node App"]
+    end
+    
+    Agent -->|"生成 HTML"| Canvas
+    Canvas -->|"提供內容"| WebUI
+    Canvas -->|"提供內容"| NodeApp
+```
+
+### Canvas 目錄結構
+
+```
+~/clawd/
+└── canvas/
+    ├── index.html        # 主要 Canvas 頁面
+    ├── dashboard.html    # 自訂 Dashboard
+    └── *.html            # 其他視覺化內容
+```
+
+### Canvas 用途
+
+| 用途 | 說明 |
+|------|------|
+| **互動式報告** | Agent 生成的數據報告，支援互動操作 |
+| **Dashboard** | 即時監控面板，顯示系統狀態 |
+| **資料視覺化** | 圖表、圖形等視覺化呈現 |
+| **小工具** | 時鐘、計算器等實用工具 |
+| **Demo 頁面** | 展示 Agent 能力的範例 |
+
+### Canvas 範例
+
+以下是一個簡單的 Canvas 範例（來自實際 EC2 環境）：
+
+```html
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>Clawdbot Canvas Demo</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        .card {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 12px;
+            padding: 30px;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>🎨 Canvas Demo</h1>
+        <div id="time"></div>
+        <button onclick="changeColor()">更換顏色</button>
+    </div>
+    <script>
+        // 即時時鐘
+        setInterval(() => {
+            document.getElementById('time').textContent = 
+                new Date().toLocaleTimeString('zh-TW');
+        }, 1000);
+    </script>
+</body>
+</html>
+```
+
+### 讓 Agent 創建 Canvas
+
+你可以直接告訴 Agent 創建視覺化內容：
+
+```
+你：幫我創建一個顯示系統狀態的 Dashboard
+Agent：好的，我會在 canvas 目錄創建一個 Dashboard...
+```
+
+Agent 會使用檔案工具在 `~/clawd/canvas/` 目錄創建 HTML 檔案。
+
+### 查看 Canvas
+
+1. **透過 Web UI** - 在 Gateway Dashboard 中查看
+2. **透過 Node App** - 在手機/電腦上查看
+3. **直接存取** - 如果有設定 HTTP 服務
+
+---
+
+## Node 遠端控制
+
+### Node 概念
+
+Clawdbot Node 是遠端控制客戶端應用程式，讓你可以從 iPhone/iPad/Mac 等設備連接到 Gateway Server，進行遠端對話和控制。
+
+### Node 架構
+
+```mermaid
+flowchart TB
+    subgraph Devices["📱 你的設備"]
+        iOS["iOS/iPadOS<br/>Clawdbot Node App"]
+        macOS["macOS<br/>Clawdbot App"]
+        Android["Android<br/>(社群版)"]
+    end
+    
+    subgraph Gateway["☁️ Gateway Server (EC2)"]
+        WS["WebSocket<br/>ws://gateway:18789"]
+        Agent["Agent"]
+        Canvas["Canvas"]
+    end
+    
+    iOS -->|"WebSocket"| WS
+    macOS -->|"WebSocket"| WS
+    Android -->|"WebSocket"| WS
+    WS --> Agent
+    WS --> Canvas
+```
+
+### Node 功能
+
+| 功能 | 說明 |
+|------|------|
+| **遠端對話** | 從手機直接與 Gateway 上的 Agent 對話 |
+| **推送通知** | 收到訊息時手機會通知 |
+| **多設備同步** | 多個 Node 可以連到同一個 Gateway |
+| **查看 Canvas** | 在手機上查看 Agent 生成的視覺化內容 |
+| **離線代理** | Gateway 24/7 運行，Node 可以隨時連入 |
+
+### Node 配對流程
+
+```mermaid
+sequenceDiagram
+    participant Node as 📱 Clawdbot Node
+    participant Gateway as ☁️ Gateway Server
+    participant Admin as 👤 管理員
+    
+    Node->>Gateway: 1. 請求配對
+    Gateway-->>Node: 2. 顯示 Pairing Code
+    Node->>Admin: 3. 告知 Pairing Code
+    Admin->>Gateway: 4. clawdbot pairing approve node <code>
+    Gateway->>Node: 5. 配對成功
+    Node->>Gateway: 6. WebSocket 連線建立
+```
+
+### 安裝 Node App
+
+| 平台 | 安裝方式 |
+|------|---------|
+| **iOS/iPadOS** | App Store 搜尋「Clawdbot Node」 |
+| **macOS** | 下載 Clawdbot macOS App |
+| **其他平台** | 查看 [官方文檔](https://docs.molt.bot/) |
+
+### 配對步驟
+
+1. **在設備上安裝 Node App**
+2. **開啟 App，輸入 Gateway 地址**
+3. **App 會顯示 Pairing Code**
+4. **在 Gateway 上執行批准**：
+   ```bash
+   clawdbot pairing approve node <PAIRING_CODE>
+   ```
+5. **配對成功，開始使用**
+
+### 在 AWS 環境中使用 Node
+
+由於 AWS 部署的 Gateway 預設只監聽 localhost（`gateway.bind: loopback`），Node 無法直接從外部連入。
+
+**解決方案：**
+
+**方案 A：使用 Tailscale（推薦）**
+
+1. 在 EC2 上安裝 Tailscale
+2. 在手機上安裝 Tailscale
+3. 兩者加入同一個 Tailnet
+4. Node App 使用 Tailscale IP 連接
+
+```bash
+# EC2 上安裝 Tailscale
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+```
+
+**方案 B：修改 Gateway 綁定（需考慮安全性）**
+
+```bash
+# 改為監聽所有介面
+clawdbot config set gateway.bind "0.0.0.0"
+clawdbot daemon restart
+```
+
+⚠️ **安全提醒**：直接暴露 Gateway 端口有安全風險，建議搭配 VPN 或防火牆使用。
+
+**方案 C：SSH Tunnel**
+
+```bash
+# 在本地建立 SSH tunnel
+ssh -L 18789:localhost:18789 ubuntu@<EC2_IP>
+```
+
+### 設備管理
+
+```bash
+# 查看已配對設備
+cat ~/.clawdbot/devices/paired.json
+
+# 查看待配對設備
+cat ~/.clawdbot/devices/pending.json
+```
+
+### Node vs Web UI vs Messaging Channels
+
+| 功能 | Node App | Web UI | Discord/Telegram |
+|------|:--------:|:------:|:----------------:|
+| 對話 | ✅ | ✅ | ✅ |
+| 推送通知 | ✅ | ❌ | ✅ |
+| 查看 Canvas | ✅ | ✅ | ❌ |
+| 離線使用 | ❌ | ❌ | ✅ (Gateway 代理) |
+| 需要配對 | ✅ | ❌ (Token) | ✅ |
+| 多設備 | ✅ | ✅ | ✅ |
+
+---
+
 ## 安全與權限
 
 ### 執行批准系統
@@ -592,6 +832,8 @@ clawdbot config set agents.defaults.model.primary "amazon-bedrock/global.anthrop
 - `groupPolicy` 設定效果
 - CLI 指令（`clawdbot config`、`clawdbot daemon`）
 - Session 和 Memory 檔案結構
+- Canvas 目錄結構和範例內容（`~/clawd/canvas/index.html`）
+- Devices 配對檔案結構（`~/.clawdbot/devices/`）
 
 ### 📖 來自官方/社群文件
 
@@ -610,6 +852,8 @@ clawdbot config set agents.defaults.model.primary "amazon-bedrock/global.anthrop
 - 多 Workspace 切換的完整流程
 - Docker sandbox 在 AWS 環境的設定
 - 部分 Skills 的詳細設定選項
+- Node App 在 AWS 環境的完整配對流程
+- Tailscale 整合的詳細步驟
 
 ---
 
