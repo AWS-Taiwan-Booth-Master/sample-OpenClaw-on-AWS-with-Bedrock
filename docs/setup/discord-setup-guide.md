@@ -68,6 +68,7 @@
 ⚠️ 如果沒有啟用 MESSAGE CONTENT INTENT，Bot 將無法讀取訊息內容！
 ```
 
+
 ### Step 1.4: 建立 Discord Server（如果沒有）
 
 1. 打開 Discord 應用程式（桌面版或網頁版）
@@ -101,13 +102,13 @@
 ```bash
 # 取得 Instance ID
 INSTANCE_ID=$(aws cloudformation describe-stacks \
-  --stack-name moltbot-bedrock \
-  --region us-west-2 \
+  --stack-name <YOUR_STACK_NAME> \
+  --region <YOUR_REGION> \
   --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' \
   --output text)
 
 # 連線
-aws ssm start-session --target $INSTANCE_ID --region us-west-2
+aws ssm start-session --target $INSTANCE_ID --region <YOUR_REGION>
 
 # 切換到 ubuntu 用戶
 sudo su - ubuntu
@@ -120,7 +121,7 @@ aws ssm send-command \
   --instance-ids "$INSTANCE_ID" \
   --document-name "AWS-RunShellScript" \
   --parameters 'commands=["sudo -u ubuntu bash -c \". /home/ubuntu/.nvm/nvm.sh && <YOUR_COMMAND>\""]' \
-  --region us-west-2
+  --region <YOUR_REGION>
 ```
 
 ### Step 2.2: 啟用 Discord 插件
@@ -133,11 +134,6 @@ clawdbot plugins list
 clawdbot plugins enable discord
 ```
 
-預期輸出：
-```
-Enabled plugin: discord
-```
-
 ### Step 2.3: 添加 Discord Channel
 
 ```bash
@@ -145,19 +141,9 @@ Enabled plugin: discord
 clawdbot channels add --channel discord --token <YOUR_BOT_TOKEN>
 ```
 
-預期輸出：
-```
-Added channel: discord
-```
-
 驗證配置：
 ```bash
 clawdbot channels list
-```
-
-預期輸出：
-```
-- Discord default: configured, token=config, enabled
 ```
 
 ### Step 2.4: 設定 Group Policy（重要！）
@@ -165,15 +151,6 @@ clawdbot channels list
 ```bash
 # 檢查當前設定
 clawdbot config get channels.discord
-```
-
-預設輸出：
-```json
-{
-  "groupPolicy": "allowlist",
-  "allowlist": [],
-  "denylist": []
-}
 ```
 
 ```
@@ -200,24 +177,10 @@ clawdbot config set channels.discord.groupPolicy open
 clawdbot daemon restart
 ```
 
-預期輸出：
-```
-Restarting gateway...
-Gateway restarted successfully
-```
-
 ### Step 2.6: 驗證狀態
 
 ```bash
 clawdbot channels status
-```
-
-預期輸出：
-```
-Discord:
-  Status: running
-  Intents: guilds, guildMessages, directMessages, messageContent
-  ...
 ```
 
 ---
@@ -245,11 +208,6 @@ Ask the bot owner to approve with: clawdbot pairing approve discord <code>
 
 ```bash
 clawdbot pairing approve discord ABC12XYZ
-```
-
-預期輸出：
-```
-Approved pairing for discord user
 ```
 
 ### Step 3.3: 測試
@@ -326,12 +284,62 @@ clawdbot channels logs --channel discord
 
 ---
 
-## 下一步
+## 附錄：README 未提及的重要事項
 
-- 📖 [Moltbot 官方文件](https://docs.molt.bot/)
-- 💬 [設定其他 Channel（WhatsApp/Telegram/Slack）](https://docs.molt.bot/channels)
-- ⚙️ [自訂 System Prompt](https://docs.molt.bot/configuration)
+### A. Web UI 無法配置 Discord
+
+**README 說的**：
+> In Web UI, add Discord channel with bot token
+
+**實際情況**：
+Web UI 顯示 "Channel config schema unavailable"，無法透過 UI 配置。必須使用 CLI。
+
+### B. SSM send-command 執行 clawdbot 需要特殊處理
+
+直接執行 `clawdbot` 會顯示 `command not found`，因為 clawdbot 是透過 nvm 安裝的。
+
+**一般指令：**
+```bash
+aws ssm send-command \
+  --instance-ids "<INSTANCE_ID>" \
+  --document-name "AWS-RunShellScript" \
+  --parameters 'commands=["sudo -u ubuntu bash -c \". /home/ubuntu/.nvm/nvm.sh && clawdbot <COMMAND>\""]' \
+  --region <REGION>
+```
+
+### C. 第三方模型需要 AWS Marketplace 權限
+
+使用 Claude、DeepSeek、Llama 等第三方模型時，可能會收到錯誤：
+
+```
+Model access is denied due to IAM user or service role is not authorized 
+to perform the required AWS Marketplace actions
+```
+
+**影響範圍**：
+
+| Model 類型 | 需要 Marketplace 權限 |
+|-----------|:--------------------:|
+| Amazon Nova (所有版本) | ❌ 不需要 |
+| Anthropic Claude (所有版本) | ✅ 需要 |
+| DeepSeek R1 | ✅ 需要 |
+| Meta Llama | ✅ 需要 |
+
+**解決方案**：CloudFormation template 已包含 `MarketplaceAccessPolicy`。
+
+### D. Bot Permissions 是在邀請時設定的
+
+如果需要更改 Bot 權限，必須重新產生邀請 URL 並重新邀請 Bot 到 Server。
 
 ---
 
-*最後更新：2026-02-04*
+## 相關文件
+
+- [Clawdbot 設定架構指南](../features/clawdbot-config-guide.md)
+- [OpenClaw 進階功能指南](../features/openclaw-advanced-features-guide.md)
+- [Moltbot 官方文件](https://docs.molt.bot/)
+- [Discord Developer Portal](https://discord.com/developers/applications)
+
+---
+
+*最後更新：2026-02-05*

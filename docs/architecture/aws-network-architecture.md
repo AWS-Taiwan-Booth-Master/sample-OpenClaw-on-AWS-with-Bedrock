@@ -1,4 +1,4 @@
-# OpenClaw on AWS 架構說明
+# OpenClaw on AWS 網路架構說明
 
 本文件詳細說明 OpenClaw (Moltbot) 在 AWS 上的網路架構、安全設計和權限管理。
 
@@ -13,11 +13,11 @@ flowchart TB
         WhatsApp["📞 WhatsApp API"]
     end
 
-    subgraph AWS["☁️ AWS Cloud (us-west-2)"]
+    subgraph AWS["☁️ AWS Cloud"]
         subgraph VPC["VPC: 10.0.0.0/16"]
             subgraph PublicSubnet["Public Subnet: 10.0.1.0/24"]
                 IGW["🚪 Internet Gateway"]
-                EC2["🖥️ EC2 Instance<br/>t4g.medium<br/>10.0.1.111"]
+                EC2["🖥️ EC2 Instance<br/>t4g.medium"]
             end
             
             subgraph PrivateSubnet["Private Subnet: 10.0.2.0/24"]
@@ -52,27 +52,26 @@ flowchart TB
     Bedrock -.->|"Audit Log"| CloudTrail
 ```
 
+---
+
 ## 網路架構詳細說明
 
 ### VPC 配置
 
-| 資源 | ID | CIDR/設定 |
-|------|-----|----------|
-| VPC | `vpc-073513ca1a769379d` | `10.0.0.0/16` |
-| Public Subnet | `subnet-0d35ddfa3ee89a244` | `10.0.1.0/24` (us-west-2a) |
-| Private Subnet | `subnet-0d671e6c6572f3ea5` | `10.0.2.0/24` (us-west-2a) |
-| Internet Gateway | `igw-045734d3bb3ebc00e` | attached |
+| 資源 | CIDR/設定 |
+|------|----------|
+| VPC | `10.0.0.0/16` |
+| Public Subnet | `10.0.1.0/24` |
+| Private Subnet | `10.0.2.0/24` |
+| Internet Gateway | attached to VPC |
 
 ### EC2 Instance
 
 | 屬性 | 值 |
 |------|-----|
-| Instance ID | `i-05c85500119de2149` |
 | Instance Type | `t4g.medium` (Graviton ARM) |
-| Private IP | `10.0.1.111` |
-| Public IP | `54.188.231.102` |
-| Subnet | Public Subnet (`10.0.1.0/24`) |
-| Security Group | `sg-028258a8bbe63ba1a` |
+| Subnet | Public Subnet |
+| Security Group | 無 Inbound 規則 |
 
 ---
 
@@ -104,7 +103,7 @@ flowchart LR
 ```mermaid
 flowchart LR
     subgraph VPC["VPC 內部"]
-        EC2["EC2<br/>10.0.1.111"]
+        EC2["EC2"]
         
         subgraph PrivateSubnet["Private Subnet"]
             VPCE1["vpce-bedrock-runtime<br/>✅ PrivateDNS"]
@@ -127,24 +126,12 @@ flowchart LR
 
 | VPC Endpoint | Service | 用途 |
 |--------------|---------|------|
-| `vpce-09b45605f8de1941d` | `bedrock-runtime` | AI 模型調用 |
-| `vpce-0da336d287ef78d43` | `ssm` | Systems Manager |
-| `vpce-07322bff2a39d2627` | `ssmmessages` | Session Manager |
-| `vpce-0f5f308c35dca2fc7` | `ec2messages` | EC2 訊息 |
+| bedrock-runtime | `com.amazonaws.<region>.bedrock-runtime` | AI 模型調用 |
+| ssm | `com.amazonaws.<region>.ssm` | Systems Manager |
+| ssmmessages | `com.amazonaws.<region>.ssmmessages` | Session Manager |
+| ec2messages | `com.amazonaws.<region>.ec2messages` | EC2 訊息 |
 
-### 3. VPC Endpoint Security Group
-
-```mermaid
-flowchart LR
-    EC2["EC2<br/>sg-028258a8bbe63ba1a"] -->|"TCP 443"| VPCE["VPC Endpoints<br/>sg-09d3d3289d14e4bb1"]
-    
-    style VPCE fill:#90EE90
-```
-
-| 規則 | 來源 | Port | 說明 |
-|------|------|------|------|
-| Inbound | `sg-028258a8bbe63ba1a` (EC2) | 443 | 只允許 EC2 連入 |
-| Outbound | `0.0.0.0/0` | All | 允許回應 |
+**注意**：SSM Session Manager 需要 3 個 endpoints（ssm + ssmmessages + ec2messages）才能正常運作。
 
 ---
 
@@ -229,7 +216,7 @@ flowchart TB
 {
   "Effect": "Allow",
   "Action": ["ssm:PutParameter", "ssm:GetParameter"],
-  "Resource": "arn:aws:ssm:us-west-2:118903272200:parameter/clawdbot/moltbot-bedrock/*"
+  "Resource": "arn:aws:ssm:<region>:<account>:parameter/clawdbot/<stack-name>/*"
 }
 ```
 
@@ -298,40 +285,11 @@ sequenceDiagram
 
 ---
 
-## 實際部署資訊
+## 相關文件
 
-| 項目 | 值 |
-|------|-----|
-| AWS Account | `118903272200` |
-| Region | `us-west-2` |
-| Stack Name | `moltbot-bedrock` |
-| VPC ID | `vpc-073513ca1a769379d` |
-| Instance ID | `i-05c85500119de2149` |
-| IAM Role | `moltbot-bedrock-ClawdbotInstanceRole-HuZ5NsYkprUG` |
+- [Web UI 架構說明](./webui-ssm-architecture.md)
+- [CloudFormation Template](../clawdbot-bedrock.yaml)
 
 ---
 
-## 資料來源說明
-
-### ✅ 實測驗證
-
-本文件所有資訊來自以下 AWS CLI 查詢：
-
-- `aws ec2 describe-vpcs`
-- `aws ec2 describe-subnets`
-- `aws ec2 describe-vpc-endpoints`
-- `aws ec2 describe-security-groups`
-- `aws ec2 describe-instances`
-- `aws ec2 describe-route-tables`
-- `aws iam list-role-policies`
-- `aws iam get-role-policy`
-- `aws iam list-attached-role-policies`
-
-### 📖 來自 CloudFormation
-
-- `clawdbot-bedrock.yaml` 模板定義
-
----
-
-*最後更新：2026-02-04*
-*基於 Stack: moltbot-bedrock 實際部署狀態*
+*最後更新：2026-02-05*
