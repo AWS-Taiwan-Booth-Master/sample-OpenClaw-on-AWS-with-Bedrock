@@ -291,6 +291,164 @@ clawdbot daemon restart
 
 ---
 
+## Gateway Dashboard (Web UI) 架構分析
+
+本節記錄對 Clawdbot Web UI 程式碼的深度研究結果。
+
+### 架構概覽
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Gateway Dashboard 架構                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────────┐     WebSocket      ┌─────────────────────┐    │
+│  │  Browser    │ ◄──────────────────► │  Gateway Server    │    │
+│  │  (SPA)      │    JSON-RPC         │  (Node.js)         │    │
+│  │             │                      │                     │    │
+│  │  index.js   │                      │  server-bridge-*   │    │
+│  │  (347KB     │                      │  server-methods.js │    │
+│  │   minified) │                      │                     │    │
+│  └─────────────┘                      └─────────────────────┘    │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 程式碼位置
+
+Web UI 相關檔案位於 Clawdbot 安裝目錄：
+
+```
+~/.nvm/versions/node/v22.22.0/lib/node_modules/clawdbot/
+├── dist/
+│   ├── control-ui/              # Web UI 前端
+│   │   ├── index.html
+│   │   └── assets/
+│   │       ├── index-*.js       # Minified SPA (347KB)
+│   │       └── index-*.css      # 樣式
+│   │
+│   └── gateway/                 # Gateway Server 後端
+│       ├── control-ui.js        # UI 靜態檔案服務
+│       ├── server-bridge-methods-config.js  # 設定 API
+│       ├── server-bridge-methods-chat.js    # 對話 API
+│       ├── server-bridge-methods-sessions.js # Session API
+│       ├── server-methods-list.js           # API 方法列表
+│       └── ...
+```
+
+### Gateway API Methods
+
+根據 `server-methods-list.js`，Gateway 支援以下 API：
+
+#### 設定相關
+| Method | 功能 | Web UI 支援 |
+|--------|------|:-----------:|
+| `config.get` | 讀取設定 | ✅ |
+| `config.set` | 寫入完整設定 | ⚠️ API 存在，UI 未實作 |
+| `config.patch` | 部分更新設定 | ⚠️ API 存在，UI 未實作 |
+| `config.schema` | 取得設定 schema | ✅ |
+
+#### 對話相關
+| Method | 功能 |
+|--------|------|
+| `chat.send` | 發送訊息 |
+| `chat.history` | 取得對話歷史 |
+| `chat.abort` | 中止回應 |
+
+#### Session 相關
+| Method | 功能 |
+|--------|------|
+| `sessions.list` | 列出所有 session |
+| `sessions.preview` | 預覽 session |
+| `sessions.delete` | 刪除 session |
+| `sessions.compact` | 壓縮 session |
+
+#### 系統相關
+| Method | 功能 |
+|--------|------|
+| `health` | 健康檢查 |
+| `status` | 系統狀態 |
+| `channels.status` | Channel 狀態 |
+| `models.list` | 列出可用 model |
+| `agents.list` | 列出 agent |
+| `skills.status` | Skills 狀態 |
+
+### 關鍵發現
+
+#### 1. Gateway API 支援設定修改
+
+從 `server-bridge-methods-config.js` 原始碼可以看到：
+
+```javascript
+case "config.set": {
+    // 驗證 params
+    // 解析 JSON5
+    // 驗證 config
+    await writeConfigFile(validated.config);  // ← 寫入檔案
+    return { ok: true, ... };
+}
+
+case "config.patch": {
+    // 部分更新
+    const merged = applyMergePatch(snapshot.config, parsedRes.parsed);
+    await writeConfigFile(validated.config);
+    return { ok: true, ... };
+}
+```
+
+#### 2. Web UI 前端功能有限
+
+雖然 Gateway API 支援設定修改，但 Web UI 前端（minified JS）**沒有實作對應的編輯介面**。
+
+**Web UI 實際支援的功能**：
+- ✅ 對話介面
+- ✅ Session 管理（查看、刪除）
+- ✅ 查看設定（唯讀）
+- ❌ 修改 Model 設定
+- ❌ 修改 Agent 設定
+- ❌ 修改 Channel 設定
+- ❌ 啟用/停用 Plugins
+
+#### 3. 設定修改必須使用 CLI
+
+由於 Web UI 沒有設定編輯功能，所有設定修改都需要透過 CLI：
+
+```bash
+# 修改 model
+clawdbot config set agents.defaults.model.primary "amazon-bedrock/..."
+
+# 修改 channel
+clawdbot config set channels.discord.groupPolicy open
+
+# 啟用 bash commands
+clawdbot config set commands.bash true
+
+# 重啟生效
+clawdbot daemon restart
+```
+
+### Slash Commands (`!` 指令)
+
+Web UI 和 Discord 都支援 Slash Commands，這些是直接執行的指令，不經過 AI：
+
+| 指令 | 功能 | 需要 `commands.bash=true` |
+|------|------|:-------------------------:|
+| `!status` | 顯示系統狀態 | ✅ |
+| `!model` | 顯示/切換 Model | ❌ |
+| `!clear` | 清除對話歷史 | ❌ |
+| `!cost` | 顯示 API 成本 | ❌ |
+| `!help` | 列出所有指令 | ❌ |
+
+啟用 bash commands：
+```bash
+clawdbot config set commands.bash true
+clawdbot daemon restart
+```
+
+⚠️ **安全提醒**：啟用 `commands.bash` 後，Bot 可以在主機上執行 shell 指令。
+
+---
+
 ## 相關文件
 
 - [Discord 設定指南](./discord-setup-guide.md)
@@ -312,6 +470,9 @@ clawdbot daemon restart
 - `groupPolicy` 設定效果（實測 Discord Server 頻道回應問題）
 - `plugins.entries` 設定（實測 Discord 插件啟用問題）
 - CLI 指令 `clawdbot config get/set`、`clawdbot daemon restart`
+- Web UI 程式碼分析（透過查看 `dist/gateway/*.js` 和 `dist/control-ui/` 取得）
+- Gateway API Methods 列表（來自 `server-methods-list.js` 原始碼）
+- 設定 API 實作細節（來自 `server-bridge-methods-config.js` 原始碼）
 
 ### 📖 來自 README
 
@@ -326,6 +487,7 @@ clawdbot daemon restart
 - `identity/` 目錄的完整用途
 - `agents/main/sessions/*.jsonl` 的詳細結構
 - 部分設定選項的完整列表
+- Web UI 前端（minified JS）的完整功能列表
 
 如發現錯誤或有官方文件補充，歡迎更新本文件。
 

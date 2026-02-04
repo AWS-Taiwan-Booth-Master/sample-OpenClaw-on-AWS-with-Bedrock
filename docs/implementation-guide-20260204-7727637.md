@@ -216,6 +216,123 @@ clawdbot pairing approve discord <CODE>
 
 ---
 
+## 7. 第三方模型需要 AWS Marketplace 權限
+
+### README 說的
+> Before deploying, enable Bedrock models in Bedrock Console
+
+### 實際情況
+切換到 Claude Sonnet 4.5 後，發送訊息會收到錯誤：
+
+```
+Model access is denied due to IAM user or service role is not authorized 
+to perform the required AWS Marketplace actions 
+(aws-marketplace:ViewSubscriptions, aws-marketplace:Subscribe) 
+to enable access to this model.
+```
+
+### 原因
+CloudFormation 建立的 IAM Role 只有 Bedrock 權限，沒有 AWS Marketplace 權限。
+
+**目前 IAM Role 權限**（來自 `clawdbot-bedrock.yaml`）：
+```yaml
+- Effect: Allow
+  Action:
+    - 'bedrock:InvokeModel'
+    - 'bedrock:InvokeModelWithResponseStream'
+    - 'bedrock:ListFoundationModels'
+    - 'bedrock:GetFoundationModel'
+  Resource: '*'
+```
+
+**缺少的權限**：
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "aws-marketplace:ViewSubscriptions",
+    "aws-marketplace:Subscribe"
+  ],
+  "Resource": "*"
+}
+```
+
+### 影響範圍
+
+| Model 類型 | 需要 Marketplace 權限 |
+|-----------|:--------------------:|
+| Amazon Nova (所有版本) | ❌ 不需要 |
+| Anthropic Claude (所有版本) | ✅ 需要 |
+| DeepSeek R1 | ✅ 需要 |
+| Meta Llama | ✅ 需要 |
+
+### 解決方案
+
+**方案 A：手動修改 IAM Role（推薦）**
+
+1. 前往 AWS Console → IAM → Roles
+2. 搜尋 `<stack-name>-ClawdbotInstanceRole-*`
+3. 點擊 Role → Add permissions → Create inline policy
+4. 選擇 JSON，貼上：
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "aws-marketplace:ViewSubscriptions",
+        "aws-marketplace:Subscribe"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
+```
+5. 命名為 `MarketplaceAccessPolicy`
+6. 等待 2 分鐘後重試
+
+**方案 B：修改 CloudFormation Template**
+
+在 `clawdbot-bedrock.yaml` 的 `ClawdbotInstanceRole` 中加入：
+
+```yaml
+- PolicyName: MarketplaceAccessPolicy
+  PolicyDocument:
+    Version: '2012-10-17'
+    Statement:
+      - Effect: Allow
+        Action:
+          - 'aws-marketplace:ViewSubscriptions'
+          - 'aws-marketplace:Subscribe'
+        Resource: '*'
+```
+
+然後更新 Stack。
+
+### 背景說明
+
+根據 AWS Bedrock 文件，2026 年起 Serverless foundation models 已自動啟用，不需要手動在 Model Access 頁面啟用。但對於第三方模型（Claude、DeepSeek、Llama），首次調用時仍需要 Marketplace 權限來完成訂閱流程。
+
+```
+⚠️ README 應該明確說明：使用非 Amazon 原生模型需要額外的 Marketplace 權限
+```
+
+---
+
+## 建議給專案維護者
+
+以下內容建議補充到 README：
+
+1. **明確說明 Discord 插件需要手動啟用**
+2. **強調 MESSAGE CONTENT INTENT 是必要的**
+3. **說明 groupPolicy 預設行為及如何修改**
+4. **補充 pairing 機制的說明**
+5. **提供 SSM send-command 的正確範例**
+6. **⭐ 新增：說明第三方模型需要 Marketplace 權限**
+
+---
+
 ## 測試環境資訊
 
 | 項目 | 值 |
@@ -225,6 +342,7 @@ clawdbot pairing approve discord <CODE>
 | Stack Name | moltbot-bedrock |
 | Instance Type | t4g.medium (Graviton) |
 | Bedrock Model | global.amazon.nova-2-lite-v1:0 |
+| IAM Role | moltbot-bedrock-ClawdbotInstanceRole-HuZ5NsYkprUG |
 | 測試日期 | 2026-02-04 |
 
 ---
