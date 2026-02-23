@@ -45,11 +45,11 @@ aws configure
 
 ```bash
 aws ec2 create-key-pair \
-  --key-name moltbot-key \
+  --key-name OpenClaw-key \
   --query 'KeyMaterial' \
-  --output text > moltbot-key.pem
+  --output text > OpenClaw-key.pem
 
-chmod 400 moltbot-key.pem
+chmod 400 OpenClaw-key.pem
 ```
 
 ## Deployment
@@ -58,17 +58,17 @@ chmod 400 moltbot-key.pem
 
 Visit GitHub repository and click "Launch Stack" button for your region:
 
-https://github.com/aws-samples/sample-Moltbot-on-AWS-with-Bedrock
+https://github.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock
 
 ### Manual Deployment via CLI
 
 ```bash
 aws cloudformation create-stack \
-  --stack-name moltbot-bedrock \
-  --template-body file://clawdbot-bedrock.yaml \
+  --stack-name OpenClaw-bedrock \
+  --template-body file://openclaw-bedrock.yaml \
   --parameters \
-    ParameterKey=KeyPairName,ParameterValue=moltbot-key \
-    ParameterKey=ClawdbotModel,ParameterValue=global.amazon.nova-2-lite-v1:0 \
+    ParameterKey=KeyPairName,ParameterValue=OpenClaw-key \
+    ParameterKey=openclawModel,ParameterValue=global.amazon.nova-2-lite-v1:0 \
     ParameterKey=InstanceType,ParameterValue=t4g.medium \
     ParameterKey=CreateVPCEndpoints,ParameterValue=true \
   --capabilities CAPABILITY_IAM \
@@ -76,7 +76,7 @@ aws cloudformation create-stack \
 
 # Wait for completion (~8 minutes)
 aws cloudformation wait stack-create-complete \
-  --stack-name moltbot-bedrock \
+  --stack-name OpenClaw-bedrock \
   --region us-west-2
 ```
 
@@ -85,13 +85,13 @@ aws cloudformation wait stack-create-complete \
 - **Instance**: t4g.medium (Graviton ARM, 20% cheaper than t3.medium)
 - **VPC Endpoints**: Enabled (private network, more secure)
 
-## Accessing Moltbot
+## Accessing OpenClaw
 
 ### Step 1: Get Instance ID
 
 ```bash
 INSTANCE_ID=$(aws cloudformation describe-stacks \
-  --stack-name moltbot-bedrock \
+  --stack-name OpenClaw-bedrock \
   --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' \
   --output text \
   --region us-west-2)
@@ -123,7 +123,7 @@ aws ssm start-session --target $INSTANCE_ID --region us-west-2
 sudo su - ubuntu
 
 # Get token
-cat ~/.clawdbot/gateway_token.txt
+cat ~/.openclaw/gateway_token.txt
 ```
 
 ### Step 4: Open Web UI
@@ -135,7 +135,7 @@ http://localhost:18789/?token=<your-token>
 
 ## Connecting Messaging Platforms
 
-For detailed guides, visit [Moltbot Documentation](https://docs.molt.bot/channels/).
+For detailed guides, visit [OpenClaw Documentation](https://docs.molt.bot/channels/).
 
 ### WhatsApp
 1. In Web UI: Channels → Add Channel → WhatsApp
@@ -176,13 +176,13 @@ aws ssm start-session --target $INSTANCE_ID --region us-west-2
 
 # Check status
 sudo su - ubuntu
-cat ~/.clawdbot/setup_status.txt
+cat ~/.openclaw/setup_status.txt
 
 # View setup logs
-tail -100 /var/log/clawdbot-setup.log
+tail -100 /var/log/openclaw-setup.log
 
 # Check service
-XDG_RUNTIME_DIR=/run/user/1000 systemctl --user status clawdbot-gateway
+XDG_RUNTIME_DIR=/run/user/1000 systemctl --user status openclaw-gateway
 ```
 
 ### Test Bedrock Connection
@@ -209,7 +209,7 @@ cat output.json
 sudo su - ubuntu
 
 # Edit config
-nano ~/.clawdbot/clawdbot.json
+nano ~/.openclaw/openclaw.json
 
 # Change "id" under models.providers.amazon-bedrock.models[0]
 # Available models:
@@ -222,7 +222,7 @@ nano ~/.clawdbot/clawdbot.json
 # Example: "amazon-bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 # Restart
-XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart clawdbot-gateway
+XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart openclaw-gateway
 ```
 
 ### Change Instance Type
@@ -231,12 +231,12 @@ Update CloudFormation stack with new InstanceType parameter:
 
 ```bash
 aws cloudformation update-stack \
-  --stack-name moltbot-bedrock \
+  --stack-name OpenClaw-bedrock \
   --use-previous-template \
   --parameters \
     ParameterKey=InstanceType,ParameterValue=c7g.xlarge \
     ParameterKey=KeyPairName,UsePreviousValue=true \
-    ParameterKey=ClawdbotModel,UsePreviousValue=true \
+    ParameterKey=openclawModel,UsePreviousValue=true \
   --capabilities CAPABILITY_IAM \
   --region us-west-2
 ```
@@ -247,31 +247,31 @@ aws cloudformation update-stack \
 
 ## Updating
 
-### Update Moltbot
+### Update OpenClaw
 
 ```bash
 # Connect via SSM
 sudo su - ubuntu
 
 # Update to latest version
-npm update -g clawdbot
+npm update -g openclaw
 
 # Restart service
-XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart clawdbot-gateway
+XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart openclaw-gateway
 
 # Verify version
-clawdbot --version
+openclaw --version
 ```
 
 ### Update CloudFormation Template
 
 ```bash
 aws cloudformation update-stack \
-  --stack-name moltbot-bedrock \
-  --template-body file://clawdbot-bedrock.yaml \
+  --stack-name OpenClaw-bedrock \
+  --template-body file://openclaw-bedrock.yaml \
   --parameters \
     ParameterKey=KeyPairName,UsePreviousValue=true \
-    ParameterKey=ClawdbotModel,UsePreviousValue=true \
+    ParameterKey=openclawModel,UsePreviousValue=true \
     ParameterKey=InstanceType,UsePreviousValue=true \
   --capabilities CAPABILITY_IAM \
   --region us-west-2
@@ -282,12 +282,12 @@ aws cloudformation update-stack \
 ```bash
 # Delete stack (removes all resources)
 aws cloudformation delete-stack \
-  --stack-name moltbot-bedrock \
+  --stack-name OpenClaw-bedrock \
   --region us-west-2
 
 # Wait for deletion
 aws cloudformation wait stack-delete-complete \
-  --stack-name moltbot-bedrock \
+  --stack-name OpenClaw-bedrock \
   --region us-west-2
 ```
 
@@ -315,8 +315,8 @@ Purchase 1-year or 3-year Savings Plans for 30-40% discount on EC2 costs.
 ## Next Steps
 
 - Configure messaging channels: https://docs.molt.bot/channels/
-- Install skills: `clawdbot skills list`
-- Set up automation: `clawdbot cron add "0 9 * * *" "Daily summary"`
+- Install skills: `openclaw skills list`
+- Set up automation: `openclaw cron add "0 9 * * *" "Daily summary"`
 - Explore advanced features: https://docs.molt.bot/
 
 For troubleshooting, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).

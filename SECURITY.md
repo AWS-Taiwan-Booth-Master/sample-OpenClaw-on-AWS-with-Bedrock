@@ -7,7 +7,7 @@
 ```bash
 # Get instance ID
 INSTANCE_ID=$(aws cloudformation describe-stacks \
-  --stack-name moltbot-bedrock \
+  --stack-name openclaw-bedrock \
   --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' \
   --output text \
   --region us-west-2)

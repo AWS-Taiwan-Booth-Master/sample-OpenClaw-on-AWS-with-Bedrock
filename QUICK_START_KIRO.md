@@ -4,7 +4,7 @@
 
 ## Conversational Deployment
 
-Want to deploy Moltbot by just chatting? Kiro AI can guide you through the entire process—from deployment to mobile configuration—through natural conversation.
+Want to deploy OpenClaw by just chatting? Kiro AI can guide you through the entire process—from deployment to mobile configuration—through natural conversation.
 
 **No commands to remember. No console clicking. Just chat.**
 
@@ -17,8 +17,8 @@ Want to deploy Moltbot by just chatting? Kiro AI can guide you through the entir
 ### Step 1: Clone Repository
 
 ```bash
-git clone https://github.com/aws-samples/sample-Moltbot-on-AWS-with-Bedrock.git
-cd sample-Moltbot-on-AWS-with-Bedrock
+git clone https://github.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock.git
+cd sample-OpenClaw-on-AWS-with-Bedrock
 ```
 
 **Note**: This works for both Linux and Mac deployments. Kiro will ask which platform you want.
@@ -33,33 +33,35 @@ cd sample-Moltbot-on-AWS-with-Bedrock
 
 1. Open your Kiro-enabled IDE (VS Code, Cursor, etc.)
 2. File → Open Folder
-3. Select `sample-Moltbot-on-AWS-with-Bedrock` folder
-4. Kiro will automatically load `.kiro/steering/deploy-moltbot-conversationally.md`
+3. Select `sample-OpenClaw-on-AWS-with-Bedrock` folder
+4. Kiro will automatically load `.kiro/steering/deploy-OpenClaw-conversationally.md`
 
 #### Option B: Kiro CLI
 
 **Install Kiro CLI**: See https://kiro.dev/docs/cli/
 
 ```bash
-cd sample-Moltbot-on-AWS-with-Bedrock
-kiro chat
+cd sample-OpenClaw-on-AWS-with-Bedrock
+kiro-cli chat
 ```
 
 Kiro CLI will load the workspace context and steering files.
 
+**Note**: If you're using Kiro IDE extension, you can skip the CLI and just open the project in your IDE - the steering files will load automatically.
+
 **Verify it's loaded**:
 - You should see `.kiro/steering/` folder in the file tree
-- Kiro will respond to "deploy moltbot" keywords
+- Kiro will respond to "deploy OpenClaw" keywords
 
 ### Step 3: Start Chatting
 
 In Kiro chat panel (IDE) or Kiro CLI, say any of these:
 
 ```
-"Help me deploy Moltbot on AWS"
-"Deploy Moltbot"
-"Setup Moltbot on AWS"
-"I want to install Moltbot"
+"Help me deploy OpenClaw on AWS"
+"Deploy OpenClaw"
+"Setup OpenClaw on AWS"
+"I want to install OpenClaw"
 ```
 
 ### Step 4: Follow Kiro's Questions
@@ -102,7 +104,7 @@ Pick one, and Kiro provides step-by-step mobile/desktop configuration guide.
 ## Example Conversation
 
 ```
-You: "Help me deploy Moltbot"
+You: "Help me deploy OpenClaw"
 
 Kiro: "Which AWS region? (1-4 or 'default')"
 
@@ -137,7 +139,7 @@ Kiro: "🚀 Deploying... (8 minutes)
       ⏱️ Creating VPC... ✓
       ⏱️ Creating security groups... ✓
       ⏱️ Launching EC2... ⏳
-      ⏱️ Installing Moltbot... ⏳
+      ⏱️ Installing OpenClaw... ⏳
       
       ✅ Complete!
       
@@ -157,7 +159,7 @@ Kiro: "📱 WhatsApp setup (3 steps):
 
 You: "yes"
 
-Kiro: "🎉 All set! Your Moltbot is live on WhatsApp.
+Kiro: "🎉 All set! Your OpenClaw is live on WhatsApp.
       
       Try sending: 'Hello' or 'What can you do?'
       
@@ -180,11 +182,11 @@ Click "Launch Stack" button in the main README for your region. Fill in paramete
 
 ```bash
 aws cloudformation create-stack \
-  --stack-name moltbot-bedrock \
-  --template-body file://clawdbot-bedrock.yaml \
+  --stack-name OpenClaw-bedrock \
+  --template-body file://openclaw-bedrock.yaml \
   --parameters \
     ParameterKey=KeyPairName,ParameterValue=your-key \
-    ParameterKey=ClawdbotModel,ParameterValue=global.amazon.nova-2-lite-v1:0 \
+    ParameterKey=openclawModel,ParameterValue=global.amazon.nova-2-lite-v1:0 \
     ParameterKey=InstanceType,ParameterValue=t4g.medium \
   --capabilities CAPABILITY_IAM \
   --region us-west-2
@@ -196,20 +198,21 @@ But honestly, **Kiro makes it way more fun**. It's like having a DevOps expert g
 
 ## Troubleshooting
 
-### "Kiro doesn't respond to 'deploy moltbot'"
+### "Kiro doesn't respond to 'deploy OpenClaw'"
 
 **Possible causes**:
 
-1. **Not in the workspace**: Make sure you opened the `sample-Moltbot-on-AWS-with-Bedrock` folder as a workspace (File → Open Folder)
+1. **Not in the workspace**: Make sure you opened the `sample-OpenClaw-on-AWS-with-Bedrock` folder as a workspace (File → Open Folder)
 
-2. **Steering file not loaded**: Check if `.kiro/steering/deploy-moltbot-conversationally.md` exists in the file tree
+2. **Steering file not loaded**: Check if `.kiro/steering/deploy-OpenClaw-conversationally.md` exists in the file tree
 
 3. **Try being more explicit**: 
-   - "Kiro, I need help deploying Moltbot on AWS"
-   - "Can you guide me through Moltbot deployment?"
+   - "Kiro, I need help deploying OpenClaw on AWS"
+   - "Can you guide me through OpenClaw deployment?"
 
 4. **Manual activation**: If automatic detection doesn't work, you can manually reference the steering file:
-   - In Kiro chat, type: `#deploy-moltbot-conversationally`
+   - In Kiro IDE: Type `#deploy-OpenClaw-conversationally` in the chat
+   - In Kiro CLI: Run `/context add .kiro/steering/deploy-OpenClaw-conversationally.md`
    - Then say: "Help me deploy"
 
 ### "I don't have AWS credentials configured"
@@ -256,9 +259,9 @@ Just say "help" and Kiro will troubleshoot with you.
 
 ## Get Started
 
-1. Clone: `git clone https://github.com/aws-samples/sample-Moltbot-on-AWS-with-Bedrock.git`
+1. Clone: `git clone https://github.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock.git`
 2. Open in Kiro-enabled IDE
-3. Say: "Kiro, help me deploy Moltbot"
+3. Say: "Kiro, help me deploy OpenClaw"
 4. Follow along
 5. Enjoy your AI assistant!
 

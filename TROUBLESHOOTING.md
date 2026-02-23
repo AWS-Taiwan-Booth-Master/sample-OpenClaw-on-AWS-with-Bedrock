@@ -7,7 +7,7 @@
 ```bash
 # Get instance ID from CloudFormation
 INSTANCE_ID=$(aws cloudformation describe-stacks \
-  --stack-name moltbot-bedrock \
+  --stack-name openclaw-bedrock \
   --query 'Stacks[0].Outputs[?OutputKey==`InstanceId`].OutputValue' \
   --output text \
   --region us-west-2)
@@ -19,31 +19,26 @@ aws ssm start-session --target $INSTANCE_ID --region us-west-2
 sudo su - ubuntu
 ```
 
-### Moltbot Common Commands
+### openclaw Common Commands
 
 ```bash
-# Check status
-clawdbot status
-clawdbot status --deep
+# Check gateway status
+openclaw gateway status
 
-# View logs
-clawdbot logs --follow
-clawdbot logs -n 100
-
-# Restart service
-XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart clawdbot-gateway
+# Restart gateway service
+XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart openclaw-gateway.service
 
 # Check service status
-XDG_RUNTIME_DIR=/run/user/1000 systemctl --user status clawdbot-gateway
+XDG_RUNTIME_DIR=/run/user/1000 systemctl --user status openclaw-gateway.service
 
-# View systemd logs
-XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -u clawdbot-gateway -n 100 -f
+# View gateway logs
+XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -u openclaw-gateway.service -n 100 -f
 
 # Check configuration
-cat ~/.clawdbot/clawdbot.json | python3 -m json.tool
+cat ~/.openclaw/openclaw.json | python3 -m json.tool
 
 # Get gateway token
-cat ~/.clawdbot/gateway_token.txt
+cat ~/.openclaw/gateway_token.txt
 
 # Test Bedrock connection
 REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
@@ -52,6 +47,21 @@ aws bedrock-runtime invoke-model \
   --body '{"messages":[{"role":"user","content":[{"text":"Hello"}]}],"inferenceConfig":{"maxTokens":100}}' \
   --region $REGION \
   /tmp/test.json && cat /tmp/test.json
+```
+
+### View Setup Logs
+
+If deployment fails or openclaw isn't working, check the setup logs on the instance:
+
+```bash
+# Last 100 lines of setup log
+sudo tail -100 /var/log/openclaw-setup.log
+
+# Follow setup log in real time (if still running)
+sudo tail -f /var/log/openclaw-setup.log
+
+# Full cloud-init log
+sudo cat /var/log/cloud-init-output.log
 ```
 
 ---
@@ -82,7 +92,7 @@ aws ec2 describe-instances \
   --region us-west-2
 
 # Restart SSM agent (if you have SSH access)
-ssh -i moltbot-key.pem ubuntu@<instance-ip>
+ssh -i openclaw-key.pem ubuntu@<instance-ip>
 sudo snap restart amazon-ssm-agent
 ```
 
@@ -294,7 +304,7 @@ aws ssm start-session \
 
 ### 8. Slow Response Times
 
-**Symptom**: Moltbot takes long time to respond
+**Symptom**: openclaw takes long time to respond
 
 **Solutions**:
 
@@ -324,7 +334,7 @@ ping bedrock-runtime.$REGION.amazonaws.com
 **Solutions**:
 
 ```bash
-# 1. Check Moltbot version
+# 1. Check openclaw version
 clawdbot --version
 
 # 2. Update to latest
@@ -338,7 +348,45 @@ XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -u clawdbot-gateway -f
 # Check ~/.clawdbot/clawdbot.json for "dmPolicy": "pairing"
 ```
 
-### 10. CloudFormation Stack Fails
+### 10. AWS CLI "text contents could not be decoded" Error
+
+**Symptom**: When running `aws cloudformation create-stack --template-body file://clawdbot-bedrock.yaml`, you get:
+```
+An error occurred (ValidationError) when calling the CreateStack operation: 
+Template format error: YAML not well-formed. text contents could not be decoded
+```
+
+**Cause**: The YAML file is not encoded in UTF-8, or contains a BOM (Byte Order Mark) that AWS CLI cannot decode.
+
+**Solutions**:
+
+```bash
+# Option 1: Convert file to UTF-8 (Linux/Mac)
+iconv -f UTF-16 -t UTF-8 clawdbot-bedrock.yaml > clawdbot-bedrock-utf8.yaml
+aws cloudformation create-stack --template-body file://clawdbot-bedrock-utf8.yaml ...
+
+# Option 2: Remove BOM if present
+sed '1s/^\xEF\xBB\xBF//' clawdbot-bedrock.yaml > clawdbot-bedrock-clean.yaml
+
+# Option 3: Re-download from GitHub (ensures UTF-8)
+curl -O https://raw.githubusercontent.com/aws-samples/sample-Moltbot-on-AWS-with-Bedrock/main/clawdbot-bedrock.yaml
+
+# Option 4: Use text editor to save as UTF-8
+# - VS Code: Click encoding in status bar → "Save with Encoding" → UTF-8
+# - Notepad++: Encoding → Convert to UTF-8 (without BOM)
+# - Sublime: File → Save with Encoding → UTF-8
+
+# Verify encoding
+file -I clawdbot-bedrock.yaml
+# Should show: text/plain; charset=utf-8
+```
+
+**Prevention**: Always clone the repository using Git, which preserves file encoding:
+```bash
+git clone https://github.com/aws-samples/sample-Moltbot-on-AWS-with-Bedrock.git
+```
+
+### 11. CloudFormation Stack Fails
 
 **Symptom**: Stack creation fails or rolls back
 
@@ -348,10 +396,10 @@ XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -u clawdbot-gateway -f
 ```bash
 # Create key pair in the region
 aws ec2 create-key-pair \
-  --key-name moltbot-key \
+  --key-name openclaw-key \
   --region us-west-2 \
   --query 'KeyMaterial' \
-  --output text > moltbot-key.pem
+  --output text > openclaw-key.pem
 ```
 
 **b) Insufficient permissions**
@@ -371,7 +419,7 @@ aws ec2 describe-account-attributes \
 **View failure reason**:
 ```bash
 aws cloudformation describe-stack-events \
-  --stack-name moltbot-bedrock \
+  --stack-name openclaw-bedrock \
   --region us-west-2 \
   --query 'StackEvents[?ResourceStatus==`CREATE_FAILED`]'
 ```
@@ -384,7 +432,7 @@ aws cloudformation describe-stack-events \
 #!/bin/bash
 # Save as diagnose.sh and run on EC2 instance
 
-echo "=== Moltbot Health Check ==="
+echo "=== openclaw Health Check ==="
 echo ""
 
 echo "1. Service Status:"
@@ -426,7 +474,7 @@ aws bedrock-runtime invoke-model \
 #!/bin/bash
 # Complete reset if configuration is corrupted
 
-echo "=== Resetting Moltbot Configuration ==="
+echo "=== Resetting openclaw Configuration ==="
 
 # Stop service
 XDG_RUNTIME_DIR=/run/user/1000 systemctl --user stop clawdbot-gateway
@@ -512,12 +560,12 @@ XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart clawdbot-gateway
 ```bash
 # Update CloudFormation stack
 aws cloudformation update-stack \
-  --stack-name moltbot-bedrock \
+  --stack-name openclaw-bedrock \
   --use-previous-template \
   --parameters \
     ParameterKey=InstanceType,ParameterValue=c7g.xlarge \
     ParameterKey=KeyPairName,UsePreviousValue=true \
-    ParameterKey=ClawdbotModel,UsePreviousValue=true \
+    ParameterKey=OpenClawModel,UsePreviousValue=true \
   --capabilities CAPABILITY_IAM \
   --region us-west-2
 ```
@@ -558,12 +606,12 @@ aws ce get-cost-and-usage \
 ```bash
 # Run on EC2 instance
 cat > /tmp/diagnostic-info.txt << 'EOF'
-=== Moltbot Diagnostic Information ===
+=== openclaw Diagnostic Information ===
 Date: $(date)
 Region: $(curl -s http://169.254.169.254/latest/meta-data/placement/region)
 Instance ID: $(curl -s http://169.254.169.254/latest/meta-data/instance-id)
 
-=== Moltbot Version ===
+=== openclaw Version ===
 $(clawdbot --version)
 
 === Service Status ===
@@ -584,10 +632,10 @@ cat /tmp/diagnostic-info.txt
 
 ### Support Resources
 
-- **Moltbot Issues**: https://github.com/moltbot/moltbot/issues
-- **Moltbot Discord**: https://discord.gg/moltbot
+- **openclaw Issues**: https://github.com/openclaw/openclaw/issues
+- **openclaw Discord**: https://discord.gg/openclaw
 - **AWS Bedrock**: https://repost.aws/tags/bedrock
-- **This Project**: https://github.com/aws-samples/sample-Moltbot-on-AWS-with-Bedrock/issues
+- **This Project**: https://github.com/aws-samples/sample-openclaw-on-AWS-with-Bedrock/issues
 
 ## Reference
 

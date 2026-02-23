@@ -1,13 +1,17 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Clawdbot - AWS Native Deployment (Bedrock + SSM + VPC Endpoints)'
+Description: 'OpenClaw - AWS Native Deployment (Bedrock + SSM + VPC Endpoints)'
 
 Metadata:
+  cfn-lint:
+    config:
+      ignore_checks:
+        - E6101
   AWS::CloudFormation::Interface:
     ParameterGroups:
       - Label:
           default: "Basic Configuration"
         Parameters:
-          - ClawdbotModel
+          - OpenClawModel
           - InstanceType
           - KeyPairName
       - Label:
@@ -17,7 +21,7 @@ Metadata:
           - AllowedSSHCIDR
 
 Parameters:
-  ClawdbotModel:
+  OpenClawModel:
     Type: String
     Default: "global.amazon.nova-2-lite-v1:0"
     Description: "Bedrock model ID - Nova 2 Lite offers best price-performance for everyday tasks"
@@ -25,21 +29,25 @@ Parameters:
       - "global.amazon.nova-2-lite-v1:0"
       - "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
       - "us.amazon.nova-pro-v1:0"
+      - "global.anthropic.claude-opus-4-6-v1"
       - "global.anthropic.claude-opus-4-5-20251101-v1:0"
       - "global.anthropic.claude-haiku-4-5-20251001-v1:0"
       - "global.anthropic.claude-sonnet-4-20250514-v1:0"
       - "us.deepseek.r1-v1:0"
       - "us.meta.llama3-3-70b-instruct-v1:0"
+      - "moonshotai.kimi-k2.5"
 
   InstanceType:
     Type: String
-    Default: "t4g.medium"
+    Default: "c7g.large"
     Description: "Graviton (ARM) recommended for 20-40% better price-performance. x86 also supported."
     AllowedValues:
       - "t4g.small"
       - "t4g.medium"
       - "t4g.large"
       - "t4g.xlarge"
+      - "c6g.large"
+      - "c6g.xlarge"
       - "c7g.large"
       - "c7g.xlarge"
       - "t3.small"
@@ -47,14 +55,16 @@ Parameters:
       - "t3.large"
       - "c5.xlarge"
 
+
   KeyPairName:
-    Type: AWS::EC2::KeyPair::KeyName
-    Description: "EC2 key pair for emergency SSH access"
+    Type: String
+    Default: "none"
+    Description: "EC2 key pair for emergency SSH access (optional - set to 'none' to skip)"
 
   AllowedSSHCIDR:
     Type: String
-    Default: "0.0.0.0/0"
-    Description: "CIDR for SSH access (recommend SSM Session Manager, set to 127.0.0.1/32 to disable SSH)"
+    Default: ""
+    Description: "CIDR for SSH access (optional - leave empty for no inbound rules. SSM Session Manager is used for access. If SSH is needed, set to your IP/32 - find your IP at checkip.amazonaws.com)"
 
   CreateVPCEndpoints:
     Type: String
@@ -64,47 +74,117 @@ Parameters:
       - "true"
       - "false"
 
-  EnableSandbox:
-    Type: String
-    Default: "true"
-    AllowedValues:
-      - "true"
-      - "false"
-
 Conditions:
   CreateEndpoints: !Equals [!Ref CreateVPCEndpoints, "true"]
-  AllowSSH: !Not [!Equals [!Ref AllowedSSHCIDR, "127.0.0.1/32"]]
-  UseGraviton: !Or
-    - !Equals [!Select [0, !Split ['.', !Ref InstanceType]], 't4g']
-    - !Equals [!Select [0, !Split ['.', !Ref InstanceType]], 'c7g']
-    - !Equals [!Select [0, !Split ['.', !Ref InstanceType]], 'm7g']
+  HasKeyPair: !Not [!Equals [!Ref KeyPairName, "none"]]
+  AllowSSH: !And
+    - !Not [!Equals [!Ref AllowedSSHCIDR, ""]]
+    - !Not [!Equals [!Ref KeyPairName, "none"]]
 
 Mappings:
-  RegionMap:
-    us-east-1:
-      AMI: "resolve-ssm"
-    us-west-2:
-      AMI: "resolve-ssm"
-    eu-west-1:
-      AMI: "resolve-ssm"
-    ap-northeast-1:
-      AMI: "resolve-ssm"
+  # Architecture detection based on instance type
+  ArchitectureMap:
+    t3.small: { Arch: "amd64" }
+    t3.medium: { Arch: "amd64" }
+    t3.large: { Arch: "amd64" }
+    t3.xlarge: { Arch: "amd64" }
+    c5.xlarge: { Arch: "amd64" }
+    t4g.small: { Arch: "arm64" }
+    t4g.medium: { Arch: "arm64" }
+    t4g.large: { Arch: "arm64" }
+    t4g.xlarge: { Arch: "arm64" }
+    c6g.large: { Arch: "arm64" }
+    c6g.xlarge: { Arch: "arm64" }
+    c7g.large: { Arch: "arm64" }
+    c7g.xlarge: { Arch: "arm64" }
+
 
 Resources:
   # ==================== Wait Condition ====================
-  ClawdbotWaitHandle:
+  OpenClawWaitHandle:
     Type: AWS::CloudFormation::WaitConditionHandle
 
-  ClawdbotWaitCondition:
-    Type: AWS::CloudFormation::WaitCondition
-    DependsOn: ClawdbotInstance
+  # ==================== VPC Endpoint ENI Cleanup ====================
+  # Interface VPC Endpoints create ENIs in the subnet. On stack deletion,
+  # CloudFormation may try to delete the subnet before ENIs are fully released,
+  # causing "subnet has dependencies" errors. This Lambda waits for ENIs to clear.
+  ENICleanupRole:
+    Type: AWS::IAM::Role
+    Condition: CreateEndpoints
     Properties:
-      Handle: !Ref ClawdbotWaitHandle
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ENICleanupPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                Resource: '*'
+
+  ENICleanupFunction:
+    Type: AWS::Lambda::Function
+    Condition: CreateEndpoints
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt ENICleanupRole.Arn
+      Timeout: 300
+      Code:
+        ZipFile: |
+          import boto3, time, cfnresponse
+          def handler(event, context):
+            if event['RequestType'] == 'Delete':
+              ec2 = boto3.client('ec2')
+              subnet_id = event['ResourceProperties']['SubnetId']
+              for _ in range(30):
+                enis = ec2.describe_network_interfaces(
+                  Filters=[{'Name': 'subnet-id', 'Values': [subnet_id]}]
+                )['NetworkInterfaces']
+                if not enis:
+                  break
+                for eni in enis:
+                  if eni['Status'] == 'available':
+                    try:
+                      ec2.delete_network_interface(NetworkInterfaceId=eni['NetworkInterfaceId'])
+                    except Exception:
+                      pass
+                time.sleep(5)
+            cfnresponse.send(event, context, cfnresponse.SUCCESS, {})
+
+  ENICleanupResource:
+    Type: AWS::CloudFormation::CustomResource
+    Condition: CreateEndpoints
+    DependsOn:
+      - BedrockRuntimeVPCEndpoint
+      - BedrockMantleVPCEndpoint
+      - SSMVPCEndpoint
+      - SSMMessagesVPCEndpoint
+      - EC2MessagesVPCEndpoint
+    Properties:
+      ServiceToken: !GetAtt ENICleanupFunction.Arn
+      SubnetId: !Ref PrivateSubnet
+
+  OpenClawWaitCondition:
+    Type: AWS::CloudFormation::WaitCondition
+    DependsOn: OpenClawInstance
+    Properties:
+      Handle: !Ref OpenClawWaitHandle
       Timeout: '900'
       Count: 1
 
   # ==================== VPC and Network ====================
-  ClawdbotVPC:
+  OpenClawVPC:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: "10.0.0.0/16"
@@ -114,19 +194,19 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vpc"
 
-  ClawdbotInternetGateway:
+  OpenClawInternetGateway:
     Type: AWS::EC2::InternetGateway
 
   AttachGateway:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
-      VpcId: !Ref ClawdbotVPC
-      InternetGatewayId: !Ref ClawdbotInternetGateway
+      VpcId: !Ref OpenClawVPC
+      InternetGatewayId: !Ref OpenClawInternetGateway
 
   PublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
-      VpcId: !Ref ClawdbotVPC
+      VpcId: !Ref OpenClawVPC
       CidrBlock: "10.0.1.0/24"
       MapPublicIpOnLaunch: true
       AvailabilityZone: !Select [0, !GetAZs '']
@@ -137,7 +217,7 @@ Resources:
   PrivateSubnet:
     Type: AWS::EC2::Subnet
     Properties:
-      VpcId: !Ref ClawdbotVPC
+      VpcId: !Ref OpenClawVPC
       CidrBlock: "10.0.2.0/24"
       AvailabilityZone: !Select [0, !GetAZs '']
       Tags:
@@ -147,7 +227,7 @@ Resources:
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
-      VpcId: !Ref ClawdbotVPC
+      VpcId: !Ref OpenClawVPC
 
   PublicRoute:
     Type: AWS::EC2::Route
@@ -155,7 +235,7 @@ Resources:
     Properties:
       RouteTableId: !Ref PublicRouteTable
       DestinationCidrBlock: "0.0.0.0/0"
-      GatewayId: !Ref ClawdbotInternetGateway
+      GatewayId: !Ref OpenClawInternetGateway
 
   SubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -169,23 +249,37 @@ Resources:
     Condition: CreateEndpoints
     Properties:
       GroupDescription: "Security group for VPC endpoints"
-      VpcId: !Ref ClawdbotVPC
+      VpcId: !Ref OpenClawVPC
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
-          SourceSecurityGroupId: !Ref ClawdbotSecurityGroup
+          SourceSecurityGroupId: !Ref OpenClawSecurityGroup
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-vpce-sg"
 
-  # Bedrock Runtime VPC Endpoint
+  # Bedrock Runtime VPC Endpoint (Converse API)
   BedrockRuntimeVPCEndpoint:
     Type: AWS::EC2::VPCEndpoint
     Condition: CreateEndpoints
     Properties:
-      VpcId: !Ref ClawdbotVPC
+      VpcId: !Ref OpenClawVPC
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.bedrock-runtime'
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+
+  # Bedrock Mantle VPC Endpoint (OpenAI-compatible API for Project Mantle models like Kimi K2.5)
+  BedrockMantleVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: CreateEndpoints
+    Properties:
+      VpcId: !Ref OpenClawVPC
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.bedrock-mantle'
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
       SubnetIds:
@@ -198,7 +292,7 @@ Resources:
     Type: AWS::EC2::VPCEndpoint
     Condition: CreateEndpoints
     Properties:
-      VpcId: !Ref ClawdbotVPC
+      VpcId: !Ref OpenClawVPC
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssm'
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
@@ -211,7 +305,7 @@ Resources:
     Type: AWS::EC2::VPCEndpoint
     Condition: CreateEndpoints
     Properties:
-      VpcId: !Ref ClawdbotVPC
+      VpcId: !Ref OpenClawVPC
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ssmmessages'
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
@@ -224,7 +318,7 @@ Resources:
     Type: AWS::EC2::VPCEndpoint
     Condition: CreateEndpoints
     Properties:
-      VpcId: !Ref ClawdbotVPC
+      VpcId: !Ref OpenClawVPC
       ServiceName: !Sub 'com.amazonaws.${AWS::Region}.ec2messages'
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
@@ -234,7 +328,7 @@ Resources:
         - !Ref VPCEndpointSecurityGroup
 
   # ==================== IAM Role ====================
-  ClawdbotInstanceRole:
+  OpenClawInstanceRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -280,23 +374,23 @@ Resources:
                 Action:
                   - 'ssm:PutParameter'
                   - 'ssm:GetParameter'
-                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/clawdbot/${AWS::StackName}/*'
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/openclaw/${AWS::StackName}/*'
       Tags:
         - Key: Name
           Value: !Sub "${AWS::StackName}-instance-role"
 
-  ClawdbotInstanceProfile:
+  OpenClawInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Roles:
-        - !Ref ClawdbotInstanceRole
+        - !Ref OpenClawInstanceRole
 
   # ==================== Security Group ====================
-  ClawdbotSecurityGroup:
+  OpenClawSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "Clawdbot instance security group"
-      VpcId: !Ref ClawdbotVPC
+      GroupDescription: "OpenClaw instance security group"
+      VpcId: !Ref OpenClawVPC
       SecurityGroupIngress:
         - !If
           - AllowSSH
@@ -314,21 +408,20 @@ Resources:
           Value: !Sub "${AWS::StackName}-sg"
 
   # ==================== EC2 Instance ====================
-  ClawdbotInstance:
+  OpenClawInstance:
     Type: AWS::EC2::Instance
     Properties:
-      ImageId: !If
-        - UseGraviton
-        - !Sub '{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id}}'
-        - !Sub '{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id}}'
+      ImageId: !Sub 
+        - '{{resolve:ssm:/aws/service/canonical/ubuntu/server/24.04/stable/current/${Arch}/hvm/ebs-gp3/ami-id}}'
+        - Arch: !FindInMap [ArchitectureMap, !Ref InstanceType, Arch]
       InstanceType: !Ref InstanceType
-      KeyName: !Ref KeyPairName
-      IamInstanceProfile: !Ref ClawdbotInstanceProfile
+      KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref "AWS::NoValue"]
+      IamInstanceProfile: !Ref OpenClawInstanceProfile
       NetworkInterfaces:
         - AssociatePublicIpAddress: true
           DeviceIndex: 0
           GroupSet:
-            - !Ref ClawdbotSecurityGroup
+            - !Ref OpenClawSecurityGroup
           SubnetId: !Ref PublicSubnet
       BlockDeviceMappings:
         - DeviceName: /dev/sda1
@@ -341,11 +434,11 @@ Resources:
           #!/bin/bash
           # Remove set -e to prevent script from stopping on errors
           
-          exec > >(tee /var/log/clawdbot-setup.log)
+          exec > >(tee /var/log/openclaw-setup.log)
           exec 2>&1
           
           echo "=========================================="
-          echo "Clawdbot AWS Native Setup: $(date)"
+          echo "OpenClaw AWS Native Setup: $(date)"
           echo "=========================================="
           
           export DEBIAN_FRONTEND=noninteractive
@@ -355,15 +448,24 @@ Resources:
           apt-get update
           apt-get upgrade -y
           apt-get install -y unzip curl
-          
+
+          # Detect region and instance ID once (IMDSv2)
+          echo "[*] Detecting instance metadata..."
+          IMDS_TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null || echo "")
+          if [ -n "$IMDS_TOKEN" ]; then
+            AWS_REGION=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || echo "")
+            INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "")
+          else
+            AWS_REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || echo "")
+            INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null || echo "")
+          fi
+          AWS_REGION=${!AWS_REGION:-"${AWS::Region}"}
+          INSTANCE_ID=${!INSTANCE_ID:-"unknown"}
+          echo "Region: $AWS_REGION | Instance: $INSTANCE_ID"
+
           # Install AWS CLI v2
           echo "[2/9] Installing AWS CLI..."
-          ARCH=$(uname -m)
-          if [ "$ARCH" = "aarch64" ]; then
-            curl "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o "awscliv2.zip"
-          else
-            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-          fi
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-$(arch).zip" -o "awscliv2.zip"
           unzip -q awscliv2.zip
           ./aws/install
           rm -rf aws awscliv2.zip
@@ -382,7 +484,6 @@ Resources:
           # Install Node.js
           echo "[5/9] Installing Node.js..."
           sudo -u ubuntu bash << 'UBUNTU_SCRIPT'
-          set -e
           cd ~
           
           # Install NVM (with retry)
@@ -402,13 +503,24 @@ Resources:
           nvm use 22
           nvm alias default 22
           
-          # Install Clawdbot (with timeout and retry)
+          # Install OpenClaw (with timeout and retry)
+          # arm64 has no prebuilt @discordjs/opus binary, use --ignore-scripts on arm64
           npm config set registry https://registry.npmjs.org/
-          npm install -g clawdbot@latest --timeout=300000 || {
-            echo "Clawdbot installation failed, retrying..."
-            npm cache clean --force
-            npm install -g clawdbot@latest --timeout=300000
-          }
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "aarch64" ]; then
+            echo "ARM64 detected, installing with --ignore-scripts to skip native build..."
+            npm install -g openclaw@latest --timeout=300000 --ignore-scripts || {
+              echo "OpenClaw installation failed on arm64, retrying..."
+              npm cache clean --force
+              npm install -g openclaw@latest --timeout=300000 --ignore-scripts
+            }
+          else
+            npm install -g openclaw@latest --timeout=300000 || {
+              echo "OpenClaw installation failed, retrying..."
+              npm cache clean --force
+              npm install -g openclaw@latest --timeout=300000
+            }
+          fi
           
           if ! grep -q 'NVM_DIR' ~/.bashrc; then
               echo 'export NVM_DIR="$HOME/.nvm"' >> ~/.bashrc
@@ -416,62 +528,61 @@ Resources:
           fi
           UBUNTU_SCRIPT
           
+          # Create a wrapper script so openclaw works system-wide without sourcing .bashrc
+          OPENCLAW_MJS=$(find /home/ubuntu/.nvm -path "*/node_modules/openclaw/openclaw.mjs" 2>/dev/null | head -1)
+          NODE_BIN=$(find /home/ubuntu/.nvm -name node -type f 2>/dev/null | head -1)
+          if [ -z "$OPENCLAW_MJS" ] || [ -z "$NODE_BIN" ]; then
+            echo "FATAL: openclaw or node not found - npm install likely failed"
+            exit 1
+          fi
+          echo "#!/bin/bash" > /usr/local/bin/openclaw
+          echo "exec $NODE_BIN $OPENCLAW_MJS \"\$@\"" >> /usr/local/bin/openclaw
+          chmod +x /usr/local/bin/openclaw
+          echo "openclaw wrapper created: node=$NODE_BIN mjs=$OPENCLAW_MJS"
+          
+          # Verify openclaw actually works before proceeding
+          if ! /usr/local/bin/openclaw --version 2>/dev/null; then
+            echo "FATAL: openclaw wrapper cannot execute - check node path"
+            exit 1
+          fi
+          echo "openclaw verified OK: $(/usr/local/bin/openclaw --version)"
+          
           # Configure AWS region
           echo "[6/9] Configuring AWS..."
-          TOKEN_IMDS=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null || echo "")
-          if [ -n "$TOKEN_IMDS" ]; then
-            REGION=$(curl -H "X-aws-ec2-metadata-token: $TOKEN_IMDS" http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || echo "")
-          else
-            REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null || echo "")
-          fi
-          
-          # Fallback if metadata service fails
-          if [ -z "$REGION" ]; then
-            REGION="${AWS::Region}"
-          fi
-          
-          echo "Detected region: $REGION"
-          sudo -u ubuntu aws configure set region "$REGION" || echo "AWS configure failed, continuing..."
-          sudo -u ubuntu aws configure set output json || echo "AWS configure failed, continuing..."
+          sudo -u ubuntu mkdir -p /home/ubuntu/.aws
+          sudo -u ubuntu bash -c "printf '[default]\nregion = %s\noutput = json\n' \"$AWS_REGION\" > /home/ubuntu/.aws/config"
+          chown -R ubuntu:ubuntu /home/ubuntu/.aws
+          chmod 600 /home/ubuntu/.aws/config
           
           # Configure environment variables
           echo "[7/9] Configuring environment variables..."
-          cat >> /home/ubuntu/.bashrc << 'EOF'
-          export AWS_REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
-          export AWS_PROFILE=default
-          export CLAWDBOT_MODEL="${ClawdbotModel}"
-          export CLAWDBOT_USE_BEDROCK=true
-          EOF
+          {
+            echo "export AWS_REGION=$AWS_REGION"
+            echo "export AWS_DEFAULT_REGION=$AWS_REGION"
+            echo "export AWS_PROFILE=default"
+            echo "export OPENCLAW_MODEL=${OpenClawModel}"
+            echo "export OPENCLAW_USE_BEDROCK=true"
+          } >> /home/ubuntu/.bashrc
+          
+          # Create systemd environment file for services
+          sudo -u ubuntu mkdir -p /home/ubuntu/.config/environment.d
+          sudo -u ubuntu bash -c "{ echo AWS_REGION=$AWS_REGION; echo AWS_DEFAULT_REGION=$AWS_REGION; } > /home/ubuntu/.config/environment.d/aws.conf"
           
           # 启用 systemd linger
           loginctl enable-linger ubuntu
           systemctl start user@1000.service
           
-          # 运行 Clawdbot onboarding
-          echo "[8/9] Configuring Clawdbot..."
+          # 运行 OpenClaw onboarding
+          echo "[8/9] Configuring OpenClaw..."
           
           # Create config directory
-          sudo -u ubuntu mkdir -p /home/ubuntu/.clawdbot
+          sudo -u ubuntu mkdir -p /home/ubuntu/.openclaw
           
           # Generate Gateway Token
           GATEWAY_TOKEN=$(openssl rand -hex 24)
           
-          # Get AWS region (using IMDSv2)
-          TOKEN_IMDS=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
-          if [ -n "$TOKEN_IMDS" ]; then
-            AWS_REGION=$(curl -H "X-aws-ec2-metadata-token: $TOKEN_IMDS" http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
-            INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN_IMDS" http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)
-          else
-            AWS_REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region 2>/dev/null)
-            INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)
-          fi
-          
-          # Fallback
-          AWS_REGION=${!AWS_REGION:-"${AWS::Region}"}
-          INSTANCE_ID=${!INSTANCE_ID:-"unknown"}
-          
-          # Create Bedrock configuration file
-          sudo -u ubuntu cat > /home/ubuntu/.clawdbot/clawdbot.json << 'JSONEOF'
+          # Create Bedrock configuration file (write as ubuntu to ensure correct ownership)
+          sudo -u ubuntu tee /home/ubuntu/.openclaw/openclaw.json > /dev/null << 'JSONEOF'
           {
             "gateway": {
               "mode": "local",
@@ -515,41 +626,96 @@ Resources:
           JSONEOF
           
           # Replace placeholders
-          sed -i "s/GATEWAY_TOKEN_PLACEHOLDER/$GATEWAY_TOKEN/g" /home/ubuntu/.clawdbot/clawdbot.json
-          sed -i "s/REGION_PLACEHOLDER/$AWS_REGION/g" /home/ubuntu/.clawdbot/clawdbot.json
-          sed -i "s|MODEL_ID_PLACEHOLDER|${ClawdbotModel}|g" /home/ubuntu/.clawdbot/clawdbot.json
+          sed -i "s/GATEWAY_TOKEN_PLACEHOLDER/$GATEWAY_TOKEN/g" /home/ubuntu/.openclaw/openclaw.json
+          sed -i "s/REGION_PLACEHOLDER/$AWS_REGION/g" /home/ubuntu/.openclaw/openclaw.json
+          sed -i "s|MODEL_ID_PLACEHOLDER|${OpenClawModel}|g" /home/ubuntu/.openclaw/openclaw.json
           
-          # Install daemon (sandbox config removed - not supported)
-          sudo -H -u ubuntu XDG_RUNTIME_DIR=/run/user/1000 bash -c '
+          # Install and start gateway
+          # Wait for user@1000 systemd session to be ready
+          for i in $(seq 1 15); do
+            if [ -S /run/user/1000/bus ]; then
+              echo "User systemd session ready"
+              break
+            fi
+            echo "Waiting for user session... $i/15"
+            sleep 2
+          done
+          
+          sudo -H -u ubuntu XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus bash -c '
           export HOME=/home/ubuntu
           export NVM_DIR="$HOME/.nvm"
           [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-          clawdbot daemon install || echo "Daemon install failed"
+          openclaw gateway install || echo "Gateway install failed"
+          systemctl --user start openclaw-gateway.service || openclaw gateway || echo "Gateway start failed"
+          '
+          
+          # Wait for daemon to be ready and verify port 18789 is listening
+          echo "Waiting for OpenClaw daemon to start..."
+          for i in $(seq 1 30); do
+            if ss -tlnp 2>/dev/null | grep -q ':18789'; then
+              echo "OpenClaw daemon is up on port 18789"
+              break
+            fi
+            echo "Attempt $i/30: port 18789 not ready yet, waiting..."
+            sleep 2
+          done
+          
+          if ! ss -tlnp 2>/dev/null | grep -q ':18789'; then
+            echo "WARNING: OpenClaw gateway did not start within 60s, trying fallback..."
+            sudo -H -u ubuntu XDG_RUNTIME_DIR=/run/user/1000 bash -c '
+            export HOME=/home/ubuntu
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+            systemctl --user restart openclaw-gateway.service || openclaw gateway &
+            '
+            sleep 5
+          fi
+          
+          # Enable messaging channels
+          echo "[8.5/9] Enabling messaging channels..."
+          sudo -H -u ubuntu bash -c '
+          export HOME=/home/ubuntu
+          export NVM_DIR="$HOME/.nvm"
+          [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+          
+          # Enable WhatsApp
+          openclaw plugins enable whatsapp || echo "WhatsApp plugin enable failed"
+          
+          # Enable Telegram
+          openclaw plugins enable telegram || echo "Telegram plugin enable failed"
+          
+          # Enable Discord
+          openclaw plugins enable discord || echo "Discord plugin enable failed"
+          
+          # Enable Slack
+          openclaw plugins enable slack || echo "Slack plugin enable failed"
+          
+          # Enable iMessage
+          openclaw plugins enable imessage || echo "iMessage plugin enable failed"
+          
+          # Enable Google Chat
+          openclaw plugins enable googlechat || echo "Google Chat plugin enable failed"
           '
           
           # Save token
-          echo "$GATEWAY_TOKEN" > /home/ubuntu/.clawdbot/gateway_token.txt
-          chown ubuntu:ubuntu /home/ubuntu/.clawdbot/gateway_token.txt
-          
-          # Get instance ID and region (using IMDSv2)
-          TOKEN_IMDS=$(curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-          INSTANCE_ID=$(curl -H "X-aws-ec2-metadata-token: $TOKEN_IMDS" http://169.254.169.254/latest/meta-data/instance-id)
+          echo "$GATEWAY_TOKEN" > /home/ubuntu/.openclaw/gateway_token.txt
+          chown ubuntu:ubuntu /home/ubuntu/.openclaw/gateway_token.txt
           
           # Save to SSM Parameter Store (so CloudFormation can retrieve it)
           STACK_NAME="${AWS::StackName}"
           aws ssm put-parameter \
-            --name "/clawdbot/$STACK_NAME/gateway-token" \
+            --name "/openclaw/$STACK_NAME/gateway-token" \
             --value "$GATEWAY_TOKEN" \
             --type "SecureString" \
             --region $AWS_REGION \
             --overwrite || echo "Failed to save token to SSM"
           
           # Save instance info
-          echo "$INSTANCE_ID" > /home/ubuntu/.clawdbot/instance_id.txt
-          echo "$AWS_REGION" > /home/ubuntu/.clawdbot/region.txt
+          echo "$INSTANCE_ID" > /home/ubuntu/.openclaw/instance_id.txt
+          echo "$AWS_REGION" > /home/ubuntu/.openclaw/region.txt
           
           # Create complete access instructions
-          echo "Clawdbot Access Instructions" > /home/ubuntu/ACCESS_INSTRUCTIONS.txt
+          echo "OpenClaw Access Instructions" > /home/ubuntu/ACCESS_INSTRUCTIONS.txt
           echo "Run on LOCAL: aws ssm start-session --target $INSTANCE_ID --region $AWS_REGION --document-name AWS-StartPortForwardingSession --parameters '{\"portNumber\":[\"18789\"],\"localPortNumber\":[\"18789\"]}'" >> /home/ubuntu/ACCESS_INSTRUCTIONS.txt
           echo "Then open: http://localhost:18789/?token=$GATEWAY_TOKEN" >> /home/ubuntu/ACCESS_INSTRUCTIONS.txt
           chown ubuntu:ubuntu /home/ubuntu/ACCESS_INSTRUCTIONS.txt
@@ -559,10 +725,10 @@ Resources:
           #!/bin/bash
           INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
           REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
-          TOKEN=$(cat /home/ubuntu/.clawdbot/gateway_token.txt)
+          TOKEN=$(cat /home/ubuntu/.openclaw/gateway_token.txt)
           
           echo "=========================================="
-          echo "Clawdbot SSM Port Forwarding"
+          echo "OpenClaw SSM Port Forwarding"
           echo "=========================================="
           echo ""
           echo "Run on your local computer:"
@@ -582,15 +748,13 @@ Resources:
           chown ubuntu:ubuntu /home/ubuntu/ssm-portforward.sh
           
           # 完成
-          echo "[9/9] Complete!"
-          echo "SUCCESS" > /home/ubuntu/.clawdbot/setup_status.txt
-          echo "Setup completed: $(date)" >> /home/ubuntu/.clawdbot/setup_status.txt
-          echo "Token: $GATEWAY_TOKEN" >> /home/ubuntu/.clawdbot/setup_status.txt
+          echo "[9/9] Signaling CloudFormation..."
+          echo "SUCCESS" > /home/ubuntu/.openclaw/setup_status.txt
+          echo "Setup completed: $(date)" >> /home/ubuntu/.openclaw/setup_status.txt
+          echo "Token: $GATEWAY_TOKEN" >> /home/ubuntu/.openclaw/setup_status.txt
           
-          # Install cfn-bootstrap tools (for cfn-signal)
-          echo "[9/9] Installing cfn-bootstrap and signaling..."
-          apt-get install -y python3-pip 2>&1 | tee -a /var/log/clawdbot-setup.log
-          pip3 install https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz 2>&1 | tee -a /var/log/clawdbot-setup.log
+          apt-get install -y python3-pip 2>&1 | tee -a /var/log/openclaw-setup.log
+          pip3 install --break-system-packages https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz 2>&1 | tee -a /var/log/openclaw-setup.log || echo "cfn-bootstrap install failed, will use curl fallback"
           
           # Find cfn-signal location
           CFN_SIGNAL=$(which cfn-signal 2>/dev/null || find /usr -name cfn-signal 2>/dev/null | head -1)
@@ -601,17 +765,17 @@ Resources:
           # Signal CloudFormation
           if [ -n "$CFN_SIGNAL" ]; then
             echo "Using cfn-signal: $CFN_SIGNAL"
-            $CFN_SIGNAL -e 0 -d "$COMPLETE_URL" -r "Clawdbot ready" '${ClawdbotWaitHandle}'
+            $CFN_SIGNAL -e 0 -d "$COMPLETE_URL" -r "OpenClaw ready" '${OpenClawWaitHandle}'
           else
             echo "cfn-signal not found, using curl"
-            SIGNAL_JSON="{\"Status\":\"SUCCESS\",\"Reason\":\"Clawdbot ready\",\"UniqueId\":\"clawdbot\",\"Data\":\"$COMPLETE_URL\"}"
-            curl -X PUT -H 'Content-Type:' --data-binary "$SIGNAL_JSON" '${ClawdbotWaitHandle}'
+            SIGNAL_JSON="{\"Status\":\"SUCCESS\",\"Reason\":\"OpenClaw ready\",\"UniqueId\":\"openclaw\",\"Data\":\"$COMPLETE_URL\"}"
+            curl -X PUT -H "Content-Type:" --data-binary "$SIGNAL_JSON" "${OpenClawWaitHandle}"
           fi
           
           echo "Signal sent successfully"
           
           echo "=========================================="
-          echo "Clawdbot installation complete!"
+          echo "OpenClaw installation complete!"
           echo "Token: $GATEWAY_TOKEN"
           echo "=========================================="
       Tags:
@@ -626,7 +790,7 @@ Outputs:
   Step2PortForwarding:
     Description: "STEP 2: Run this command on LOCAL computer (keep terminal open)"
     Value: !Sub |
-      aws ssm start-session --target ${ClawdbotInstance} --region ${AWS::Region} --document-name AWS-StartPortForwardingSession --parameters '{"portNumber":["18789"],"localPortNumber":["18789"]}'
+      aws ssm start-session --target ${OpenClawInstance} --region ${AWS::Region} --document-name AWS-StartPortForwardingSession --parameters '{"portNumber":["18789"],"localPortNumber":["18789"]}'
 
   Step3AccessURL:
     Description: "STEP 3: Open this URL in browser"
@@ -638,25 +802,33 @@ Outputs:
           - 0
           - !Split 
             - '"}'
-            - !GetAtt ClawdbotWaitCondition.Data
+            - !GetAtt OpenClawWaitCondition.Data
 
   Step4StartChatting:
-    Description: "STEP 4: Start using Clawdbot!"
-    Value: "Connect WhatsApp, Telegram, Discord. See README: https://github.com/JiaDe-Wu/clawdbot-aws-bedrock"
+    Description: "STEP 4: Start using OpenClaw!"
+    Value: "Connect WhatsApp, Telegram, Discord. See README: https://github.com/aws-samples/sample-OpenClaw-on-AWS-with-Bedrock"
 
   InstanceId:
     Description: "EC2 Instance ID (for reference)"
-    Value: !Ref ClawdbotInstance
+    Value: !Ref OpenClawInstance
 
   BedrockModel:
     Description: "Bedrock model in use"
-    Value: !Ref ClawdbotModel
+    Value: !Ref OpenClawModel
 
   MonthlyCost:
     Description: "Estimated monthly cost (USD)"
-    Value: !Sub |
-      EC2 (${InstanceType}): ~$30-40
-      EBS (30GB): ~$2.40
-      VPC Endpoints: ${!If [CreateEndpoints, "~$22 ($0.01/hour per endpoint)", "$0"]}
-      Bedrock: Pay-per-use
-      Total: ~${!If [CreateEndpoints, "$55-65", "$33-43"]}/month
+    Value: !Sub
+      - |
+        EC2 (${InstanceType}): ~$20-40 (Graviton instances 20% cheaper)
+        EBS (30GB): ~$2.40
+        VPC Endpoints: ${EndpointCost}
+        Bedrock: Pay-per-use
+        Total: ~${TotalCost}/month
+        Note: Graviton (ARM64) instances offer better price-performance ratio
+      - EndpointCost: !If [CreateEndpoints, "~$29 ($0.01/hour x 5 endpoints)", "$0"]
+        TotalCost: !If [CreateEndpoints, "$45-65", "$23-43"]
+
+  InstanceArchitecture:
+    Description: "Instance architecture"
+    Value: !FindInMap [ArchitectureMap, !Ref InstanceType, Arch]
