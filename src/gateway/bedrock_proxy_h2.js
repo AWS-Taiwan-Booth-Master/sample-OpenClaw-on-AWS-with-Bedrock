@@ -40,24 +40,83 @@ function extractUserMessage(body) {
     }
   }
 
-  // Extract channel/sender from system prompt
-  const systemText = systemParts
-    .map(p => (typeof p === 'string' ? p : p.text || ''))
-    .join(' ');
+  // Extract channel/sender identity from user message text first (primary),
+  // then fall back to system prompt regex (legacy), then MD5 hash (last resort).
+  //
+  // OpenClaw embeds identity in user messages, not system prompts. Formats:
+  //   Slack:    "Slack DM from W017LFGP267: hello"
+  //             "Slack message in #general from W017LFGP267: hello"
+  //   WhatsApp: "WhatsApp message from 8613800138000: hello"
+  //   Telegram: "Telegram message from 123456789: hello"
+  //             "Telegram message in GroupName from 123456789: hello"
+  //   Discord:  "Discord DM from username#1234: hello"
+  //             "Discord message in #channel from username#1234: hello"
 
   let channel = 'unknown';
   let userId = 'unknown';
 
-  const chMatch = systemText.match(/(?:channel|source|platform)[:\s]+(\w+)/i);
-  if (chMatch) channel = chMatch[1].toLowerCase();
+  // --- Primary: extract from user message text ---
 
-  const idMatch = systemText.match(/(?:sender|from|user|recipient|target)[:\s]+([\w@+\-.]+)/i);
-  if (idMatch) userId = idMatch[1];
+  // Slack DM: "Slack DM from <userId>:"
+  const slackDm = userText.match(/Slack DM from ([\w]+):/i);
+  // Slack channel: "Slack message in #<channel> from <userId>:"
+  const slackChan = userText.match(/Slack (?:message )?in #([\w-]+).*?from ([\w]+):/i);
+  // WhatsApp: "WhatsApp message from <phone>:"
+  const waDm = userText.match(/WhatsApp (?:message |DM )?from ([\w+\-.]+):/i);
+  // WhatsApp group: "WhatsApp message in <group> from <phone>:"
+  const waGroup = userText.match(/WhatsApp (?:message )?in (.+?) from ([\w+\-.]+):/i);
+  // Telegram: "Telegram message from <userId>:"
+  const tgDm = userText.match(/Telegram (?:message |DM )?from ([\w]+):/i);
+  // Telegram group: "Telegram message in <group> from <userId>:"
+  const tgGroup = userText.match(/Telegram (?:message )?in (.+?) from ([\w]+):/i);
+  // Discord DM: "Discord DM from <user>:"
+  const dcDm = userText.match(/Discord DM from ([\w#]+):/i);
+  // Discord channel: "Discord message in #<channel> from <user>:"
+  const dcChan = userText.match(/Discord (?:message )?in #([\w-]+).*?from ([\w#]+):/i);
 
+  if (slackChan) {
+    channel = 'slack';
+    userId = 'chan_' + slackChan[1] + '_' + slackChan[2];
+  } else if (slackDm) {
+    channel = 'slack';
+    userId = 'dm_' + slackDm[1];
+  } else if (waGroup) {
+    channel = 'whatsapp';
+    userId = 'grp_' + waGroup[2];
+  } else if (waDm) {
+    channel = 'whatsapp';
+    userId = waDm[1];
+  } else if (tgGroup) {
+    channel = 'telegram';
+    userId = 'grp_' + tgGroup[2];
+  } else if (tgDm) {
+    channel = 'telegram';
+    userId = tgDm[1];
+  } else if (dcChan) {
+    channel = 'discord';
+    userId = 'chan_' + dcChan[1] + '_' + dcChan[2];
+  } else if (dcDm) {
+    channel = 'discord';
+    userId = 'dm_' + dcDm[1];
+  }
+
+  // --- Fallback: system prompt regex (legacy / future structured metadata) ---
   if (userId === 'unknown') {
-    // Hash system prompt for stable tenant_id
-    const crypto = require('node:crypto');
-    userId = 'sys-' + crypto.createHash('md5').update(systemText.slice(0, 500)).digest('hex').slice(0, 12);
+    const systemText = systemParts
+      .map(p => (typeof p === 'string' ? p : p.text || ''))
+      .join(' ');
+
+    const chMatch = systemText.match(/(?:channel|source|platform)[:\s]+(\w+)/i);
+    if (chMatch) channel = chMatch[1].toLowerCase();
+
+    const idMatch = systemText.match(/(?:sender|from|user|recipient|target)[:\s]+([\w@+\-.]+)/i);
+    if (idMatch) userId = idMatch[1];
+
+    // --- Last resort: MD5 hash for stable but opaque tenant_id ---
+    if (userId === 'unknown') {
+      const crypto = require('node:crypto');
+      userId = 'sys-' + crypto.createHash('md5').update(systemText.slice(0, 500)).digest('hex').slice(0, 12);
+    }
   }
 
   return { userText, channel, userId };
