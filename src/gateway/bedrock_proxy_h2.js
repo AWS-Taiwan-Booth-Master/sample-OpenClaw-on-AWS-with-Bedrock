@@ -124,9 +124,16 @@ server.on('stream', (stream, headers) => {
       log(`Request: ${path} channel=${channel} user=${userId} msg=${userText.slice(0, 60)}`);
 
       if (!userText) {
-        const resp = buildConverseResponse("I didn't receive a message.");
-        stream.respond({ ':status': 200, 'content-type': 'application/json' });
-        stream.end(JSON.stringify(resp));
+        if (isStream) {
+          stream.respond({ ':status': 200, 'content-type': 'application/vnd.amazon.eventstream' });
+          const evts = buildEventStream("I didn't receive a message.");
+          for (const e of evts) stream.write(e);
+          stream.end();
+        } else {
+          const resp = buildConverseResponse("I didn't receive a message.");
+          stream.respond({ ':status': 200, 'content-type': 'application/json' });
+          stream.end(JSON.stringify(resp));
+        }
         return;
       }
 
@@ -134,10 +141,11 @@ server.on('stream', (stream, headers) => {
       log(`Response: ${responseText.slice(0, 80)}`);
 
       if (isStream) {
-        // Bedrock ConverseStream uses application/vnd.amazon.eventstream
-        // For simplicity, return non-streaming response (OpenClaw handles both)
-        stream.respond({ ':status': 200, 'content-type': 'application/json' });
-        stream.end(JSON.stringify(buildConverseResponse(responseText)));
+        // Bedrock ConverseStream expects application/vnd.amazon.eventstream binary format
+        stream.respond({ ':status': 200, 'content-type': 'application/vnd.amazon.eventstream' });
+        const evts = buildEventStream(responseText);
+        for (const e of evts) stream.write(e);
+        stream.end();
       } else {
         stream.respond({ ':status': 200, 'content-type': 'application/json' });
         stream.end(JSON.stringify(buildConverseResponse(responseText)));
@@ -162,6 +170,75 @@ function buildConverseResponse(text) {
     usage: { inputTokens: 0, outputTokens: text.split(/\s+/).length, totalTokens: text.split(/\s+/).length },
     metrics: { latencyMs: 0 },
   };
+}
+
+/**
+ * Build AWS eventstream binary frames for ConverseStream response.
+ * Wire format per event: [total_len:4][headers_len:4][prelude_crc:4][headers][payload][message_crc:4]
+ */
+function buildEventStream(text) {
+  const events = [];
+
+  function crc32(buf) {
+    const T = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) {
+      let c = i;
+      for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      T[i] = c;
+    }
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < buf.length; i++) crc = T[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  function encodeHeaders(h) {
+    const parts = [];
+    for (const [k, v] of Object.entries(h)) {
+      const kb = Buffer.from(k), vb = Buffer.from(v);
+      const b = Buffer.alloc(1 + kb.length + 1 + 2 + vb.length);
+      let o = 0;
+      b.writeUInt8(kb.length, o); o += 1;
+      kb.copy(b, o); o += kb.length;
+      b.writeUInt8(7, o); o += 1; // type 7 = string
+      b.writeUInt16BE(vb.length, o); o += 2;
+      vb.copy(b, o);
+      parts.push(b);
+    }
+    return Buffer.concat(parts);
+  }
+
+  function makeEvent(type, payload) {
+    const hdrs = {
+      ':event-type': type,
+      ':content-type': 'application/json',
+      ':message-type': 'event',
+    };
+    const hBuf = encodeHeaders(hdrs);
+    const pBuf = Buffer.from(JSON.stringify(payload));
+    const total = 12 + hBuf.length + pBuf.length + 4;
+    const buf = Buffer.alloc(total);
+    let o = 0;
+    buf.writeUInt32BE(total, o); o += 4;
+    buf.writeUInt32BE(hBuf.length, o); o += 4;
+    buf.writeUInt32BE(crc32(buf.slice(0, 8)), o); o += 4;
+    hBuf.copy(buf, o); o += hBuf.length;
+    pBuf.copy(buf, o); o += pBuf.length;
+    buf.writeUInt32BE(crc32(buf.slice(0, o)), o);
+    return buf;
+  }
+
+  events.push(makeEvent('messageStart', { role: 'assistant' }));
+  events.push(makeEvent('contentBlockStart', { contentBlockIndex: 0, start: {} }));
+  events.push(makeEvent('contentBlockDelta', { contentBlockIndex: 0, delta: { text } }));
+  events.push(makeEvent('contentBlockStop', { contentBlockIndex: 0 }));
+  events.push(makeEvent('messageStop', { stopReason: 'end_turn' }));
+  const tc = text.split(/\s+/).length;
+  events.push(makeEvent('metadata', {
+    usage: { inputTokens: 0, outputTokens: tc, totalTokens: tc },
+    metrics: { latencyMs: 0 },
+  }));
+
+  return events;
 }
 
 // Also listen on HTTP/1.1 for health checks and curl testing
