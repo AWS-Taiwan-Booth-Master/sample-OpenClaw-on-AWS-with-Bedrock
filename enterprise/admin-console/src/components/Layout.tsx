@@ -6,7 +6,7 @@ import {
   Bell, Search, Menu, X, CheckCircle, LogOut, User, FolderOpen, BookOpen,
   Sun, Moon,
 } from 'lucide-react';
-import { useApprovals, useAlertRules } from '../hooks/useApi';
+import { useApprovals, useAlertRules, useAgents, useEmployees } from '../hooks/useApi';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import ClawForgeLogo from './ClawForgeLogo';
@@ -118,34 +118,48 @@ export default function Layout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const { data: approvalsData } = useApprovals();
   const { data: alertRules = [] } = useAlertRules();
+  const { data: agents = [] } = useAgents();
+  const { data: employees = [] } = useEmployees();
   const { user, logout } = useAuth();
   const { theme, toggle: toggleTheme } = useTheme();
   const pendingApprovals = approvalsData?.pending?.length || 0;
   const activeAlerts = alertRules.filter(a => a.status === 'warning').length;
   const notifCount = pendingApprovals + activeAlerts;
 
-  // Quick search results — deduplicated
+  // Quick search results — searches pages, agents, employees
   const searchResults = searchQuery.length >= 2 ? (() => {
     const seen = new Set<string>();
     const results: { label: string; href: string; type: string }[] = [];
+    const q = searchQuery.toLowerCase();
     const add = (label: string, href: string, type: string) => {
       const key = `${label}:${href}`;
       if (!seen.has(key)) { seen.add(key); results.push({ label, href, type }); }
     };
+    // Pages
     NAV.forEach(item => {
-      if (item.href && item.label.toLowerCase().includes(searchQuery.toLowerCase()))
+      if (item.href && item.label.toLowerCase().includes(q))
         add(item.label, item.href, 'page');
       item.children?.forEach(c => {
-        if (c.label.toLowerCase().includes(searchQuery.toLowerCase()))
+        if (c.label.toLowerCase().includes(q))
           add(c.label, c.href, 'page');
       });
     });
-    if (searchQuery.toLowerCase().includes('soul')) add('SOUL Editor', '/agents', 'feature');
-    if (searchQuery.toLowerCase().includes('alert')) add('Monitor Alerts', '/monitor', 'feature');
-    if (searchQuery.toLowerCase().includes('budget')) add('Budget Management', '/usage', 'feature');
-    if (searchQuery.toLowerCase().includes('security')) add('Security Alerts', '/audit', 'feature');
-    if (searchQuery.toLowerCase().includes('provision')) add('Bulk Provision', '/org/positions', 'feature');
-    return results.slice(0, 6);
+    // Agents
+    agents.forEach(a => {
+      if (a.name.toLowerCase().includes(q) || a.employeeName.toLowerCase().includes(q) || a.positionName.toLowerCase().includes(q))
+        add(`${a.name} (${a.positionName})`, `/agents/${a.id}`, 'agent');
+    });
+    // Employees
+    employees.forEach(e => {
+      if (e.name.toLowerCase().includes(q) || e.positionName.toLowerCase().includes(q) || e.departmentName.toLowerCase().includes(q))
+        add(`${e.name} — ${e.positionName}`, '/org/employees', 'employee');
+    });
+    // Feature shortcuts
+    if (q.includes('soul')) add('SOUL Editor', '/agents', 'feature');
+    if (q.includes('alert')) add('Monitor Alerts', '/monitor', 'feature');
+    if (q.includes('budget')) add('Budget Management', '/usage', 'feature');
+    if (q.includes('provision')) add('Bulk Provision', '/org/positions', 'feature');
+    return results.slice(0, 8);
   })() : [];
 
   return (
@@ -223,13 +237,15 @@ export default function Layout({ children }: { children: ReactNode }) {
                 className="w-80 rounded-lg border border-dark-border bg-dark-bg py-2 pl-10 pr-4 text-sm text-text-primary placeholder:text-text-muted focus:border-primary focus:outline-none"
               />
               {searchFocused && searchResults.length > 0 && (
-                <div className="absolute top-full left-0 right-0 mt-1 rounded-lg border border-dark-border bg-dark-card shadow-xl z-50 overflow-hidden">
+                <div className="absolute top-full left-0 right-0 mt-1 rounded-2xl border border-dark-border/50 bg-dark-card shadow-xl z-50 overflow-hidden">
                   {searchResults.map((r, i) => (
                     <button key={i} onClick={() => { navigate(r.href); setSearchQuery(''); setSearchFocused(false); }}
                       className="flex items-center gap-3 w-full px-4 py-2.5 text-left hover:bg-dark-hover transition-colors">
-                      <Search size={14} className="text-text-muted" />
-                      <span className="text-sm text-text-primary">{r.label}</span>
-                      <span className="text-[10px] text-text-muted ml-auto">{r.type}</span>
+                      {r.type === 'agent' ? <Bot size={14} className="text-primary shrink-0" /> :
+                       r.type === 'employee' ? <Users size={14} className="text-cyan shrink-0" /> :
+                       <Search size={14} className="text-text-muted shrink-0" />}
+                      <span className="text-sm text-text-primary truncate">{r.label}</span>
+                      <span className="text-[10px] text-text-muted ml-auto shrink-0 rounded-full bg-surface-container-highest/60 px-2 py-0.5">{r.type}</span>
                     </button>
                   ))}
                 </div>

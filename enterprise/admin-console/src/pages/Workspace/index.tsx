@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { FolderOpen, File, Lock, Edit3, User, ChevronRight, ChevronDown, Eye, GitCompare, Save, Globe, Briefcase, Bot, ArrowRight, Loader } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { FolderOpen, FolderClosed, File, Lock, Edit3, User, ChevronRight, ChevronDown, Eye, GitCompare, Save, Globe, Briefcase, Bot, ArrowRight, Loader, Search } from 'lucide-react';
 import { Card, Badge, Button, PageHeader } from '../../components/ui';
-import { useAgents, usePositions, useWorkspaceTree, useWorkspaceFile } from '../../hooks/useApi';
+import { useAgents, usePositions, useWorkspaceTree } from '../../hooks/useApi';
 import { api } from '../../api/client';
 import clsx from 'clsx';
 
@@ -10,29 +11,96 @@ interface WsFile {
   locked: boolean; size: number; lastModified?: string;
 }
 
-const layerColors: Record<string, { text: string; border: string; bg: string }> = {
-  global: { text: 'text-text-muted', border: 'border-text-muted/30', bg: 'bg-dark-bg/30' },
-  position: { text: 'text-primary', border: 'border-primary/30', bg: 'bg-primary/5' },
-  personal: { text: 'text-success', border: 'border-success/30', bg: 'bg-success/5' },
+const layerConfig = {
+  global: { text: 'text-text-muted', border: 'border-text-muted/30', bg: 'bg-surface-dim', icon: '🔒', label: 'Global (IT Locked)' },
+  position: { text: 'text-primary', border: 'border-primary/30', bg: 'bg-primary/5', icon: '📋', label: 'Position' },
+  personal: { text: 'text-success', border: 'border-success/30', bg: 'bg-success/5', icon: '👤', label: 'Personal' },
 };
 
-function FileRow({ file, selected, onSelect }: { file: WsFile; selected: boolean; onSelect: () => void }) {
-  const colors = layerColors[file.layer];
+// M3-style collapsible folder node
+function FolderNode({ label, icon, count, children, defaultOpen = false, color = 'text-text-secondary' }: {
+  label: string; icon: React.ReactNode; count: number; children: React.ReactNode; defaultOpen?: boolean; color?: string;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(!open)}
+        className={clsx(
+          'flex w-full items-center gap-2 rounded-2xl px-3 py-2.5 text-sm font-medium transition-all duration-200',
+          'hover:bg-dark-hover active:scale-[0.98]',
+          color
+        )}
+      >
+        <span className="transition-transform duration-200" style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)' }}>
+          <ChevronRight size={14} />
+        </span>
+        {icon}
+        <span className="flex-1 text-left">{label}</span>
+        <span className="text-xs text-text-muted rounded-full bg-surface-container-highest/60 px-2 py-0.5">{count}</span>
+      </button>
+      <div className={clsx(
+        'overflow-hidden transition-all duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]',
+        open ? 'max-h-[2000px] opacity-100' : 'max-h-0 opacity-0'
+      )}>
+        <div className="ml-4 border-l border-dark-border/40 pl-2 py-1">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Sub-folder node (e.g., skills/, memory/)
+function SubFolder({ label, files, selectedKey, onSelect }: {
+  label: string; files: WsFile[]; selectedKey: string; onSelect: (f: WsFile) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (files.length === 0) return null;
+  return (
+    <div>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-xs text-text-secondary hover:bg-dark-hover transition-colors"
+      >
+        {open ? <FolderOpen size={13} className="text-text-muted" /> : <FolderClosed size={13} className="text-text-muted" />}
+        <span className="flex-1 text-left font-medium">{label}</span>
+        <span className="text-text-muted">{files.length}</span>
+      </button>
+      {open && (
+        <div className="ml-4 py-0.5 space-y-0.5">
+          {files.map(f => (
+            <FileItem key={f.key} file={f} selected={selectedKey === f.key} onSelect={() => onSelect(f)} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Individual file item
+function FileItem({ file, selected, onSelect }: { file: WsFile; selected: boolean; onSelect: () => void }) {
   return (
     <button
       onClick={onSelect}
-      className={clsx('flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors',
-        selected ? 'bg-primary/10 text-primary-light' : `hover:bg-dark-hover ${colors.text}`)}
+      className={clsx(
+        'flex w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-sm transition-all duration-200',
+        selected
+          ? 'bg-primary/10 text-primary font-medium'
+          : 'text-text-secondary hover:bg-dark-hover hover:text-text-primary'
+      )}
     >
-      <File size={14} />
-      <span className="flex-1 text-left truncate">{file.name}</span>
-      {file.locked ? <Lock size={11} className="text-text-muted shrink-0" /> : <Edit3 size={11} className="text-text-muted shrink-0" />}
-      <span className="text-xs text-text-muted shrink-0">{file.size > 1024 ? `${(file.size / 1024).toFixed(1)}KB` : `${file.size}B`}</span>
+      <File size={13} className={selected ? 'text-primary' : 'text-text-muted'} />
+      <span className="flex-1 text-left truncate text-xs">{file.name.replace(/^(skills\/|memory\/)/, '')}</span>
+      {file.locked && <Lock size={10} className="text-text-muted shrink-0" />}
+      <span className="text-[10px] text-text-muted shrink-0">{file.size > 1024 ? `${(file.size / 1024).toFixed(1)}K` : `${file.size}B`}</span>
     </button>
   );
 }
 
+
 export default function Workspace() {
+  const [searchParams] = useSearchParams();
   const { data: agents = [], isLoading: agentsLoading } = useAgents();
   const { data: positions = [] } = usePositions();
   const [selectedAgent, setSelectedAgent] = useState('');
@@ -41,24 +109,27 @@ export default function Workspace() {
   const [editContent, setEditContent] = useState('');
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [showDiff, setShowDiff] = useState(false);
+  const [filterText, setFilterText] = useState('');
 
-  // Set default agent when data loads
+  // Set agent from URL param or default
   useEffect(() => {
-    if (agents.length > 0 && !selectedAgent) {
+    const agentParam = searchParams.get('agent');
+    if (agentParam && agents.some(a => a.id === agentParam)) {
+      setSelectedAgent(agentParam);
+    } else if (agents.length > 0 && !selectedAgent) {
       setSelectedAgent(agents[0].id);
     }
-  }, [agents, selectedAgent]);
+  }, [agents, selectedAgent, searchParams]);
 
   const { data: wsTree, isLoading: treeLoading } = useWorkspaceTree(selectedAgent);
 
   const agent = agents.find(a => a.id === selectedAgent);
   const position = positions.find(p => p.id === agent?.positionId);
 
-  // Build flat file list from workspace tree API response
+  // Build structured file list from workspace tree API
   const allFiles: WsFile[] = [];
   if (wsTree) {
-    const tree = wsTree as { global: { soul: { key: string; name: string; size: number; lastModified: string }[]; skills: { key: string; name: string; size: number; lastModified: string }[] }; position: { soul: { key: string; name: string; size: number; lastModified: string }[]; skills: { key: string; name: string; size: number; lastModified: string }[] }; personal: { files: { key: string; name: string; size: number; lastModified: string }[] } };
+    const tree = wsTree as any;
     for (const f of (tree.global?.soul || [])) {
       allFiles.push({ key: f.key, name: f.name, layer: 'global', locked: true, size: f.size, lastModified: f.lastModified });
     }
@@ -77,13 +148,20 @@ export default function Workspace() {
     }
   }
 
-  const globalFiles = allFiles.filter(f => f.layer === 'global');
-  const positionFiles = allFiles.filter(f => f.layer === 'position');
-  const personalFiles = allFiles.filter(f => f.layer === 'personal');
+  // Group files by layer and subfolder
+  const globalSoul = allFiles.filter(f => f.layer === 'global' && !f.name.startsWith('skills/'));
+  const globalSkills = allFiles.filter(f => f.layer === 'global' && f.name.startsWith('skills/'));
+  const posSoul = allFiles.filter(f => f.layer === 'position' && !f.name.startsWith('skills/'));
+  const posSkills = allFiles.filter(f => f.layer === 'position' && f.name.startsWith('skills/'));
+  const personalCore = allFiles.filter(f => f.layer === 'personal' && !f.name.startsWith('memory/') && !f.name.startsWith('skills/'));
+  const personalMemory = allFiles.filter(f => f.layer === 'personal' && f.name.startsWith('memory/'));
+  const personalSkills = allFiles.filter(f => f.layer === 'personal' && f.name.startsWith('skills/'));
+
+  // Filter
+  const matchFilter = (f: WsFile) => !filterText || f.name.toLowerCase().includes(filterText.toLowerCase());
 
   const handleSelectFile = async (file: WsFile) => {
     setSelectedFileKey(file.key);
-    setShowDiff(false);
     setLoading(true);
     try {
       const resp = await api.get<{ key: string; content: string; size: number }>(`/workspace/file?key=${encodeURIComponent(file.key)}`);
@@ -103,10 +181,7 @@ export default function Workspace() {
       await api.put('/workspace/file', { key: selectedFileKey, content: editContent });
       setFileContent(editContent);
       setTimeout(() => setSaving(false), 1000);
-    } catch {
-      setSaving(false);
-      // Error is shown by the API client (401 redirect, etc.)
-    }
+    } catch { setSaving(false); }
   };
 
   const handleAgentChange = (id: string) => {
@@ -122,14 +197,9 @@ export default function Workspace() {
     <div>
       <PageHeader
         title="Workspace Manager"
-        description="Inspect and edit the three-layer file system that composes each agent's runtime workspace"
+        description="Three-layer file system — Global (IT locked) → Position → Personal"
         actions={
           <div className="flex gap-2">
-            {selectedFile && (
-              <Button variant="default" onClick={() => setShowDiff(!showDiff)}>
-                <GitCompare size={16} /> {showDiff ? 'Editor' : 'Diff View'}
-              </Button>
-            )}
             <Button variant="primary" disabled={!selectedFile || selectedFile.locked || saving} onClick={handleSave}>
               <Save size={16} /> {saving ? '✓ Saved' : 'Save'}
             </Button>
@@ -137,7 +207,7 @@ export default function Workspace() {
         }
       />
 
-      {/* Agent selector + inheritance chain */}
+      {/* Agent selector */}
       <Card className="mb-6">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
@@ -146,22 +216,22 @@ export default function Workspace() {
               <Loader size={16} className="animate-spin text-text-muted" />
             ) : (
               <select value={selectedAgent} onChange={e => handleAgentChange(e.target.value)}
-                className="rounded-lg border border-dark-border bg-dark-bg px-3 py-2 text-sm text-text-primary focus:border-primary focus:outline-none appearance-none min-w-[280px]">
-                <optgroup label="Personal Agents (1:1)">
+                className="rounded-2xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary focus:border-primary/60 focus:outline-none appearance-none min-w-[280px]">
+                <optgroup label="Personal Agents">
                   {agents.filter(a => a.employeeId).map(a => <option key={a.id} value={a.id}>{a.name} ({a.positionName})</option>)}
                 </optgroup>
-                <optgroup label="Shared Agents (N:1)">
+                <optgroup label="Shared Agents">
                   {agents.filter(a => !a.employeeId).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
                 </optgroup>
               </select>
             )}
           </div>
           <div className="flex items-center gap-2 text-sm">
-            <div className="flex items-center gap-1.5"><Globe size={14} className="text-text-muted" /><span className="text-text-muted">Global ({globalFiles.length})</span></div>
+            <Badge>🔒 Global {globalSoul.length + globalSkills.length}</Badge>
             <ArrowRight size={14} className="text-text-muted" />
-            <div className="flex items-center gap-1.5"><Briefcase size={14} className="text-primary" /><span className="text-primary">{position?.name || '?'} ({positionFiles.length})</span></div>
+            <Badge color="primary">📋 {position?.name || '?'} {posSoul.length + posSkills.length}</Badge>
             <ArrowRight size={14} className="text-text-muted" />
-            <div className="flex items-center gap-1.5"><User size={14} className="text-success" /><span className="text-success">{agent?.employeeName || 'Shared'} ({personalFiles.length})</span></div>
+            <Badge color="success">👤 {agent?.employeeName || 'Shared'} {personalCore.length + personalMemory.length}</Badge>
             <span className="text-text-muted">=</span>
             <Badge color="info">{allFiles.length} files</Badge>
           </div>
@@ -169,52 +239,56 @@ export default function Workspace() {
       </Card>
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-4" style={{ minHeight: '600px' }}>
-        {/* File tree */}
+        {/* File tree — M3 collapsible style */}
         <Card className="lg:col-span-1 overflow-y-auto max-h-[700px]">
-          <h3 className="text-sm font-semibold text-text-primary mb-3">Workspace Explorer</h3>
+          <div className="flex items-center gap-2 mb-3">
+            <h3 className="text-sm font-semibold text-text-primary flex-1">Explorer</h3>
+          </div>
+
+          {/* Search */}
+          <div className="relative mb-3">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-muted" />
+            <input value={filterText} onChange={e => setFilterText(e.target.value)} placeholder="Filter files..."
+              className="w-full rounded-xl border border-dark-border/40 bg-surface-dim py-1.5 pl-8 pr-3 text-xs text-text-primary placeholder:text-text-muted focus:border-primary/40 focus:outline-none" />
+          </div>
 
           {treeLoading ? (
             <div className="flex items-center justify-center py-8"><Loader size={20} className="animate-spin text-text-muted" /></div>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-1">
               {/* Global */}
-              <div>
-                <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1 px-2">🔒 Global</p>
-                <div className="space-y-0.5">
-                  {globalFiles.map(f => (
-                    <FileRow key={f.key} file={f} selected={selectedFileKey === f.key} onSelect={() => handleSelectFile(f)} />
-                  ))}
-                  {globalFiles.length === 0 && <p className="text-xs text-text-muted px-3 py-2">No global files</p>}
-                </div>
-              </div>
+              <FolderNode label="Global (IT Locked)" icon={<Globe size={15} />} count={globalSoul.length + globalSkills.length} color="text-text-muted">
+                {globalSoul.filter(matchFilter).map(f => (
+                  <FileItem key={f.key} file={f} selected={selectedFileKey === f.key} onSelect={() => handleSelectFile(f)} />
+                ))}
+                <SubFolder label="skills" files={globalSkills.filter(matchFilter)} selectedKey={selectedFileKey} onSelect={handleSelectFile} />
+              </FolderNode>
 
               {/* Position */}
-              <div>
-                <p className="text-xs font-medium text-primary uppercase tracking-wider mb-1 px-2">📋 Position: {position?.name || '?'}</p>
-                <div className="space-y-0.5">
-                  {positionFiles.map(f => (
-                    <FileRow key={f.key} file={f} selected={selectedFileKey === f.key} onSelect={() => handleSelectFile(f)} />
-                  ))}
-                  {positionFiles.length === 0 && <p className="text-xs text-text-muted px-3 py-2">No position files</p>}
-                </div>
-              </div>
+              <FolderNode label={position?.name || 'Position'} icon={<Briefcase size={15} />} count={posSoul.length + posSkills.length} defaultOpen color="text-primary">
+                {posSoul.filter(matchFilter).map(f => (
+                  <FileItem key={f.key} file={f} selected={selectedFileKey === f.key} onSelect={() => handleSelectFile(f)} />
+                ))}
+                <SubFolder label="skills" files={posSkills.filter(matchFilter)} selectedKey={selectedFileKey} onSelect={handleSelectFile} />
+              </FolderNode>
 
               {/* Personal */}
-              <div>
-                <p className="text-xs font-medium text-success uppercase tracking-wider mb-1 px-2">👤 Personal: {agent?.employeeName || 'Shared'}</p>
-                <div className="space-y-0.5">
-                  {personalFiles.map(f => (
-                    <FileRow key={f.key} file={f} selected={selectedFileKey === f.key} onSelect={() => handleSelectFile(f)} />
-                  ))}
-                  {personalFiles.length === 0 && <p className="text-xs text-text-muted px-3 py-2">No personal files</p>}
-                </div>
-              </div>
+              <FolderNode label={agent?.employeeName || 'Personal'} icon={<User size={15} />} count={personalCore.length + personalMemory.length + personalSkills.length} defaultOpen color="text-success">
+                {personalCore.filter(matchFilter).map(f => (
+                  <FileItem key={f.key} file={f} selected={selectedFileKey === f.key} onSelect={() => handleSelectFile(f)} />
+                ))}
+                <SubFolder label="memory" files={personalMemory.filter(matchFilter)} selectedKey={selectedFileKey} onSelect={handleSelectFile} />
+                <SubFolder label="skills" files={personalSkills.filter(matchFilter)} selectedKey={selectedFileKey} onSelect={handleSelectFile} />
+                {personalCore.length === 0 && personalMemory.length === 0 && (
+                  <p className="text-[10px] text-text-muted px-2 py-1">No personal files yet</p>
+                )}
+              </FolderNode>
             </div>
           )}
 
-          <div className="mt-4 pt-3 border-t border-dark-border space-y-1.5 text-xs text-text-muted">
-            <div className="flex items-center gap-1.5"><Lock size={11} /> Read-only (IT locked or system-generated)</div>
-            <div className="flex items-center gap-1.5"><Edit3 size={11} /> Editable (position admin or employee)</div>
+          <div className="mt-4 pt-3 border-t border-dark-border/30 space-y-1 text-[10px] text-text-muted">
+            <div className="flex items-center gap-1.5"><Lock size={10} /> Read-only</div>
+            <div className="flex items-center gap-1.5"><Edit3 size={10} /> Editable</div>
           </div>
         </Card>
 
@@ -226,7 +300,7 @@ export default function Workspace() {
             <div>
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
-                  <File size={18} className={layerColors[selectedFile.layer].text} />
+                  <File size={18} className={layerConfig[selectedFile.layer].text} />
                   <h3 className="text-lg font-semibold text-text-primary">{selectedFile.name}</h3>
                   <Badge color={selectedFile.layer === 'global' ? 'default' : selectedFile.layer === 'position' ? 'primary' : 'success'}>
                     {selectedFile.layer}
@@ -240,27 +314,29 @@ export default function Workspace() {
               </div>
 
               {selectedFile.locked ? (
-                <pre className={`rounded-lg ${layerColors[selectedFile.layer].bg} border-l-2 ${layerColors[selectedFile.layer].border} p-4 text-sm text-text-secondary whitespace-pre-wrap font-mono leading-relaxed min-h-[450px] max-h-[550px] overflow-y-auto`}>
+                <pre className={clsx('rounded-2xl p-4 text-sm text-text-secondary whitespace-pre-wrap font-mono leading-relaxed min-h-[450px] max-h-[550px] overflow-y-auto border-l-2',
+                  layerConfig[selectedFile.layer].bg, layerConfig[selectedFile.layer].border)}>
                   {fileContent}
                 </pre>
               ) : (
                 <textarea
                   value={editContent}
                   onChange={e => setEditContent(e.target.value)}
-                  className={`w-full rounded-lg ${layerColors[selectedFile.layer].bg} border-l-2 ${layerColors[selectedFile.layer].border} border border-dark-border p-4 text-sm text-text-primary font-mono leading-relaxed min-h-[450px] max-h-[550px] focus:border-primary focus:outline-none resize-none`}
+                  className={clsx('w-full rounded-2xl border border-dark-border/40 p-4 text-sm text-text-primary font-mono leading-relaxed min-h-[450px] max-h-[550px] focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/10 resize-none border-l-2',
+                    layerConfig[selectedFile.layer].bg, layerConfig[selectedFile.layer].border)}
                 />
               )}
 
-              <div className="mt-4 pt-3 border-t border-dark-border flex items-center justify-between text-xs text-text-muted">
-                <span className="font-mono">s3://{selectedFile.key}</span>
+              <div className="mt-4 pt-3 border-t border-dark-border/30 flex items-center justify-between text-xs text-text-muted">
+                <span className="font-mono truncate max-w-[60%]">s3://{selectedFile.key}</span>
                 <span>{fileContent.split('\n').length} lines · {fileContent.length} chars</span>
               </div>
             </div>
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-text-muted py-20">
-              <FolderOpen size={48} className="mb-4 opacity-30" />
+              <FolderOpen size={48} className="mb-4 opacity-20" />
               <p className="text-lg mb-2">Select a file from the explorer</p>
-              <p className="text-sm">Files are read from S3 in real-time. Click any file to view its content.</p>
+              <p className="text-sm">Click any file to view or edit. Files are read from S3 in real-time.</p>
             </div>
           )}
         </Card>

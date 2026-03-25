@@ -1,7 +1,7 @@
 import { useParams, useNavigate } from 'react-router-dom';
 import Chart from 'react-apexcharts';
 import type { ApexOptions } from 'apexcharts';
-import { ArrowLeft, Edit3, Play, Settings, Bot, Star, Zap, Clock, Shield, MessageSquare, TrendingUp, Eye, Loader } from 'lucide-react';
+import { ArrowLeft, Edit3, Play, Settings, Bot, Star, Zap, Clock, Shield, MessageSquare, TrendingUp, Eye, Loader, FolderOpen } from 'lucide-react';
 import { Card, Badge, Button, PageHeader, StatusDot } from '../../components/ui';
 import { useAgent, useAgents, usePositions, useBindings, useSessions, useAgentDailyUsage } from '../../hooks/useApi';
 import { CHANNEL_LABELS } from '../../types';
@@ -81,8 +81,8 @@ export default function AgentDetail() {
           <div className="flex gap-2">
             <Button variant="default" onClick={() => navigate('/agents')}><ArrowLeft size={16} /> Back</Button>
             <Button variant="default" onClick={() => navigate(`/agents/${agent.id}/soul`)}><Edit3 size={16} /> Edit SOUL</Button>
-            <Button variant="default" onClick={() => navigate('/playground')}><Play size={16} /> Test</Button>
-            <Button variant="default" onClick={() => navigate('/workspace')}><Settings size={16} /> Workspace</Button>
+            <Button variant="default" onClick={() => navigate(`/playground?agent=${agent.id}`)}><MessageSquare size={16} /> Playground</Button>
+            <Button variant="default" onClick={() => navigate(`/workspace?agent=${agent.id}`)}><FolderOpen size={16} /> Workspace</Button>
           </div>
         }
       />

@@ -1106,16 +1106,45 @@ class PlaygroundMessage(BaseModel):
     message: str
     mode: str = "simulate"  # "simulate" or "live"
 
-PLAYGROUND_PROFILES = {
-    "wa__intern_sarah": {"role": "intern", "tools": ["web_search"], "planA": "DENY shell, file_write, code_execution.\nALLOW web_search.", "planE": "Block file paths, credentials, internal IPs."},
-    "tg__engineer_alex": {"role": "engineer", "tools": ["web_search", "shell", "browser", "file", "file_write", "code_execution"], "planA": "ALLOW all dev tools.\nDENY: rm -rf, chmod 777.\nSandbox: Docker.", "planE": "Block /etc/shadow, AWS credentials, private keys."},
-    "dc__admin_jordan": {"role": "admin", "tools": ["web_search", "shell", "browser", "file", "file_write", "code_execution"], "planA": "ALLOW all tools.\nLog all admin actions.", "planE": "Block credential exposure."},
-    "sl__finance_carol": {"role": "finance", "tools": ["web_search", "file"], "planA": "ALLOW web_search, file (read-only).\nDENY shell, code_execution.\nData: /finance/** only.", "planE": "Block PII (SSN, credit cards)."},
+_POS_TOOLS = {
+    "pos-sa": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
+    "pos-sde": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
+    "pos-devops": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
+    "pos-qa": ["web_search", "shell", "file", "code_execution"],
+    "pos-ae": ["web_search", "file", "crm-query", "email-send"],
+    "pos-pm": ["web_search", "file", "notion-sync", "calendar-check"],
+    "pos-fa": ["web_search", "file", "excel-gen", "sap-connector"],
+    "pos-hr": ["web_search", "file", "email-send", "calendar-check"],
+    "pos-csm": ["web_search", "file", "crm-query", "email-send"],
+    "pos-legal": ["web_search", "file"],
+    "pos-exec": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
 }
 
 @app.get("/api/v1/playground/profiles")
 def get_playground_profiles():
-    return PLAYGROUND_PROFILES
+    """Dynamically generate profiles for all employees with agents."""
+    emps = db.get_employees()
+    positions = db.get_positions()
+    pos_map = {p["id"]: p for p in positions}
+    channel_short = {"whatsapp": "wa", "telegram": "tg", "discord": "dc", "slack": "sl", "feishu": "fs", "dingtalk": "dt"}
+    profiles = {}
+    for emp in emps:
+        if not emp.get("agentId"):
+            continue
+        pos_id = emp.get("positionId", "")
+        pos = pos_map.get(pos_id, {})
+        ch = emp.get("channels", ["slack"])[0] if emp.get("channels") else "slack"
+        ch_key = channel_short.get(ch, ch[:2])
+        tenant_id = f"{ch_key}__{emp['id']}"
+        role = pos.get("name", "unknown").lower().replace(" ", "_")
+        tools = _POS_TOOLS.get(pos_id, pos.get("toolAllowlist", ["web_search"]))
+        blocked = [t for t in ["shell", "browser", "file_write", "code_execution"] if t not in tools]
+        plan_a = f"ALLOW: {', '.join(tools)}."
+        if blocked:
+            plan_a += f"\nDENY: {', '.join(blocked)}."
+        plan_e = "Block PII (SSN, credit cards, phone numbers). Block credential exposure."
+        profiles[tenant_id] = {"role": role, "tools": tools, "planA": plan_a, "planE": plan_e}
+    return profiles
 
 @app.post("/api/v1/playground/send")
 def playground_send(body: PlaygroundMessage):
@@ -1498,23 +1527,92 @@ def _query_cloudwatch_sessions(region: str, minutes: int = 30) -> list:
 
 @app.get("/api/v1/monitor/sessions")
 def get_sessions(source: str = "auto", authorization: str = Header(default="")):
-    """Return active sessions from DynamoDB, with CloudWatch fallback."""
+    """Return active sessions — merge DynamoDB seed data + real CloudWatch sessions.
+    Enrich CloudWatch sessions with employee/agent names from DynamoDB."""
     user = _get_current_user(authorization)
-    if source in ("auto", "cloudwatch"):
-        cw_sessions = _query_cloudwatch_sessions("us-east-1")
-        if cw_sessions:
-            sessions = cw_sessions
-        else:
-            sessions = db.get_sessions()
-    else:
-        sessions = db.get_sessions()
+
+    # Always start with DynamoDB seed sessions (have proper names, conversations)
+    db_sessions = db.get_sessions()
+
+    # Enrich DynamoDB sessions that have raw tenant IDs (from real AgentCore usage tracking)
+    employees = db.get_employees()
+    agents_list = db.get_agents()
+    emp_map = {e["id"]: e for e in employees}
+    agent_by_emp = {a.get("employeeId", ""): a for a in agents_list if a.get("employeeId")}
+
+    enriched_db = []
+    for s in db_sessions:
+        eid = s.get("employeeId", "")
+        # Skip sessions with no useful data
+        if not eid or eid == "unknown":
+            continue
+        # If already has a proper name, keep it
+        if s.get("employeeName") and s["employeeName"] != eid and len(s.get("agentName", "")) > 3:
+            enriched_db.append(s)
+            continue
+        # Try to resolve raw ID to employee
+        emp = emp_map.get(eid)
+        if emp:
+            agent = agent_by_emp.get(emp["id"])
+            s["employeeName"] = emp["name"]
+            s["agentId"] = agent["id"] if agent else s.get("agentId", "")
+            s["agentName"] = agent["name"] if agent else f"Agent ({emp.get('positionName', '')})"
+            if not s.get("channel") or s["channel"] == "unknown":
+                s["channel"] = emp.get("channels", ["portal"])[0]
+            if not s.get("startedAt"):
+                s["startedAt"] = s.get("lastActive", "")
+            enriched_db.append(s)
+        # else: skip unresolvable sessions (noise from raw CloudWatch data)
+
+    # Merge CloudWatch real sessions (from actual AgentCore invocations)
+    cw_sessions = _query_cloudwatch_sessions("us-east-1", minutes=120)
+    if cw_sessions:
+        employees = db.get_employees()
+        agents = db.get_agents()
+        emp_map = {e["id"]: e for e in employees}
+        agent_map = {a.get("employeeId", ""): a for a in agents if a.get("employeeId")}
+
+        db_session_ids = {s.get("id") for s in enriched_db}
+
+        for cw in cw_sessions:
+            # Resolve employee from tenant_id parts
+            raw_id = cw.get("employeeId", "")
+            emp = emp_map.get(raw_id)
+            if not emp:
+                # Try SSM user-mapping lookup (Discord user ID → emp-xxx)
+                for e in employees:
+                    if raw_id in (e.get("employeeNo", ""), e.get("id", "")):
+                        emp = e
+                        break
+
+            if emp:
+                agent = agent_map.get(emp["id"])
+                cw["employeeId"] = emp["id"]
+                cw["employeeName"] = emp["name"]
+                cw["agentId"] = agent["id"] if agent else ""
+                cw["agentName"] = agent["name"] if agent else f"Agent ({emp['positionName']})"
+                cw["channel"] = emp.get("channels", ["unknown"])[0] if not cw.get("channel") or cw["channel"] == "unknown" else cw["channel"]
+            else:
+                # Skip sessions we can't resolve — they're noise
+                continue
+
+            # Add startedAt from timestamp if missing
+            if cw.get("timestamp") and not cw.get("startedAt"):
+                from datetime import datetime as _dt, timezone as _tz
+                cw["startedAt"] = _dt.fromtimestamp(cw["timestamp"] / 1000, tz=_tz.utc).isoformat()
+
+            # Only add if not already in DB sessions
+            if cw.get("id") not in db_session_ids:
+                enriched_db.append(cw)
+
+    sessions = enriched_db
 
     # Scope for managers
     if user and user.role == "manager":
         scope = _get_dept_scope(user)
         if scope is not None:
-            employees = db.get_employees()
-            emp_ids = {e["id"] for e in employees if e.get("departmentId") in scope}
+            employees_list = db.get_employees()
+            emp_ids = {e["id"] for e in employees_list if e.get("departmentId") in scope}
             sessions = [s for s in sessions if s.get("employeeId") in emp_ids]
     return sessions
 

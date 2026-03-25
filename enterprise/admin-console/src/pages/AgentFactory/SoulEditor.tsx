@@ -12,6 +12,7 @@ export default function SoulEditor() {
   const { data: agent, isLoading: agentLoading } = useAgent(agentId || '');
   const { data: soulLayers, isLoading: soulLoading } = useAgentSoul(agentId || '');
   const { data: positions = [] } = usePositions();
+  const saveSoul = useSaveSoul();
   const position = positions.find(p => p.id === agent?.positionId);
 
   const [globalContent, setGlobalContent] = useState('');
@@ -19,6 +20,7 @@ export default function SoulEditor() {
   const [personalContent, setPersonalContent] = useState('');
   const [activeTab, setActiveTab] = useState('position');
   const [saved, setSaved] = useState(false);
+  const [showMergedPreview, setShowMergedPreview] = useState(false);
 
   // Populate from API data when it loads
   useEffect(() => {
@@ -55,10 +57,6 @@ export default function SoulEditor() {
       </div>
     );
   }
-
-  const saveSoul = useSaveSoul();
-
-  const [showMergedPreview, setShowMergedPreview] = useState(false);
 
   const mergedSoulText = useMemo(() => {
     const parts = [];
