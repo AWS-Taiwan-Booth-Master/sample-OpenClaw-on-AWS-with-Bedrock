@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import Chart from 'react-apexcharts';
 import type { ApexOptions } from 'apexcharts';
-import { DollarSign, TrendingUp, TrendingDown, Users, Bot, AlertTriangle, Download, Calendar, Info, Cpu, Plus, Trash2, Brain, BookOpen, Languages, SlidersHorizontal } from 'lucide-react';
+import { DollarSign, TrendingUp, TrendingDown, Users, Bot, AlertTriangle, Download, Calendar, Info, Cpu, Plus } from 'lucide-react';
 import { Card, StatCard, Badge, Button, PageHeader, Table, Tabs, Select, Modal } from '../components/ui';
-import { useUsageSummary, useUsageByDepartment, useUsageByAgent, useUsageBudgets, useUsageTrend, useUsageByModel, useModelConfig, useUpdateModelConfig, useUpdateFallbackModel, useSetPositionModel, useRemovePositionModel, usePositions, useEmployees, useKnowledgeBases, useSetEmployeeModel, useRemoveEmployeeModel, useAgentConfig, useSetPositionAgentConfig, useSetEmployeeAgentConfig, useKBAssignments, useSetPositionKBs, useSetEmployeeKBs } from '../hooks/useApi';
+import { useUsageSummary, useUsageByDepartment, useUsageByAgent, useUsageBudgets, useUsageTrend, useUsageByModel, useModelConfig, useUpdateModelConfig, useUpdateFallbackModel, usePositions, useAgentConfig, useKBAssignments } from '../hooks/useApi';
 
 const costTrendOpts: ApexOptions = {
   chart: { type: 'area', toolbar: { show: false }, background: 'transparent' },
@@ -27,45 +27,25 @@ export default function Usage() {
   const { data: trend = [] } = useUsageTrend();
   const { data: mc } = useModelConfig();
   const { data: positions = [] } = usePositions();
-  const { data: employees = [] } = useEmployees();
-  const { data: kbs = [] } = useKnowledgeBases();
   const { data: agentCfgData } = useAgentConfig();
   const { data: kbAssignData } = useKBAssignments();
   const updateDefault = useUpdateModelConfig();
   const updateFallback = useUpdateFallbackModel();
-  const setPositionModel = useSetPositionModel();
-  const removePositionModel = useRemovePositionModel();
-  const setEmployeeModel = useSetEmployeeModel();
-  const removeEmployeeModel = useRemoveEmployeeModel();
-  const setPositionAgentCfg = useSetPositionAgentConfig();
-  const setEmployeeAgentCfg = useSetEmployeeAgentConfig();
-  const setPositionKBs = useSetPositionKBs();
-  const setEmployeeKBs = useSetEmployeeKBs();
   const [activeTab, setActiveTab] = useState('department');
   const [timeRange, setTimeRange] = useState('7d');
-  const [modelModal, setModelModal] = useState<'default' | 'fallback' | 'override' | 'employee' | null>(null);
+  const [modelModal, setModelModal] = useState<'default' | 'fallback' | null>(null);
   const [selectedModelId, setSelectedModelId] = useState('');
-  const [overridePosId, setOverridePosId] = useState('');
-  const [overrideEmpId, setOverrideEmpId] = useState('');
-  const [overrideReason, setOverrideReason] = useState('');
-  const [agentCfgTarget, setAgentCfgTarget] = useState<{ type: 'pos'|'emp'; id: string; name: string } | null>(null);
-  const [agentCfgDraft, setAgentCfgDraft] = useState<Record<string, any>>({});
-  const [kbTarget, setKBTarget] = useState<{ type: 'pos'|'emp'; id: string; name: string } | null>(null);
-  const [kbDraft, setKBDraft] = useState<string[]>([]);
 
   const s = summary || { totalInputTokens: 0, totalOutputTokens: 0, totalCost: 0, totalRequests: 0, tenantCount: 0, chatgptEquivalent: 5 };
   const m = mc || { default: { modelId: '', modelName: '—', inputRate: 0, outputRate: 0 }, fallback: { modelId: '', modelName: '', inputRate: 0, outputRate: 0 }, positionOverrides: {}, employeeOverrides: {}, availableModels: [] };
   const agentCfg = agentCfgData || { positionConfig: {}, employeeConfig: {} };
-  const kbAssign = kbAssignData || { positionKBs: {}, employeeKBs: {} };
   const modelOptions = m.availableModels.map((mo: any) => ({ label: `${mo.modelName}  ($${mo.inputRate} in / $${mo.outputRate} out per 1M tokens)`, value: mo.modelId }));
   const findModel = (id: string) => m.availableModels.find((mo: any) => mo.modelId === id);
   const handleModelSave = () => {
     const model = findModel(selectedModelId); if (!model) return;
     if (modelModal === 'default') updateDefault.mutate({ modelId: model.modelId, modelName: model.modelName, inputRate: model.inputRate, outputRate: model.outputRate });
     else if (modelModal === 'fallback') updateFallback.mutate({ modelId: model.modelId, modelName: model.modelName, inputRate: model.inputRate, outputRate: model.outputRate });
-    else if (modelModal === 'override' && overridePosId) setPositionModel.mutate({ posId: overridePosId, modelId: model.modelId, modelName: model.modelName, inputRate: model.inputRate, outputRate: model.outputRate, reason: overrideReason || 'Custom model' });
-    else if (modelModal === 'employee' && overrideEmpId) setEmployeeModel.mutate({ empId: overrideEmpId, modelId: model.modelId, modelName: model.modelName, inputRate: model.inputRate, outputRate: model.outputRate, reason: overrideReason || 'Personal model' });
-    setModelModal(null); setSelectedModelId(''); setOverridePosId(''); setOverrideEmpId(''); setOverrideReason('');
+    setModelModal(null); setSelectedModelId('');
   };
 
   const buildDeptBarOpts = (depts: typeof byDept): ApexOptions => ({
@@ -370,31 +350,14 @@ export default function Usage() {
                 ))}
               </div>
 
-              {/* Per-position overrides */}
-              <Card>
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h3 className="text-sm font-semibold text-text-primary">Per-Position Model Overrides</h3>
-                    <p className="text-xs text-text-muted">Assign a different model (and cost tier) to specific positions</p>
-                  </div>
-                  <Button variant="primary" size="sm" onClick={() => setModelModal('override')}><Plus size={13} /> Add Override</Button>
+              {/* Per-position/employee overrides — managed in Agent Factory > Configuration */}
+              <div className="rounded-xl border border-dark-border/40 bg-surface-dim px-4 py-3 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-text-primary">Per-Position & Per-Employee Model Overrides</p>
+                  <p className="text-xs text-text-muted">Configure in Agent Factory → Configuration tab</p>
                 </div>
-                {Object.keys(m.positionOverrides).length === 0 ? (
-                  <p className="text-sm text-text-muted text-center py-6">All positions use the default model</p>
-                ) : (
-                  <div className="divide-y divide-dark-border/30">
-                    {Object.entries(m.positionOverrides).map(([posId, ov]: [string, any]) => (
-                      <div key={posId} className="flex items-center justify-between py-3">
-                        <div>
-                          <p className="text-sm font-medium text-text-primary">{positions.find(p => p.id === posId)?.name || posId}</p>
-                          <p className="text-xs text-text-muted">{ov.modelName} · ${ov.inputRate}/${ov.outputRate} per 1M · {ov.reason}</p>
-                        </div>
-                        <Button variant="ghost" size="sm" onClick={() => removePositionModel.mutate(posId)}><Trash2 size={13} /></Button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </Card>
+                <Badge color="info">{Object.keys({...m.positionOverrides,...(m.employeeOverrides||{})}).length} overrides active</Badge>
+              </div>
 
               {/* All available models as a pricing card */}
               <Card>
@@ -428,187 +391,43 @@ export default function Usage() {
                 </div>
               </Card>
 
-              {/* Per-employee model overrides */}
-              <Card>
-                <div className="flex items-center justify-between mb-4">
-                  <div>
-                    <h3 className="text-sm font-semibold text-text-primary flex items-center gap-2"><Users size={15} className="text-primary" /> Per-Employee Model Overrides</h3>
-                    <p className="text-xs text-text-muted">Highest priority — overrides both position and global default</p>
-                  </div>
-                  <Button variant="primary" size="sm" onClick={() => setModelModal('employee')}><Plus size={13} /> Add</Button>
+              {/* Memory & Context — now in Agent Factory */}
+              <div className="rounded-xl border border-dark-border/40 bg-surface-dim px-4 py-3 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-text-primary">Memory & Context Settings</p>
+                  <p className="text-xs text-text-muted">Configure in Agent Factory → Configuration tab</p>
                 </div>
-                {Object.keys(m.employeeOverrides || {}).length === 0 ? (
-                  <p className="text-sm text-text-muted text-center py-4">No employee-level overrides</p>
-                ) : (
-                  <div className="divide-y divide-dark-border/30">
-                    {Object.entries(m.employeeOverrides || {}).map(([empId, ov]: [string, any]) => (
-                      <div key={empId} className="flex items-center justify-between py-3">
-                        <div>
-                          <p className="text-sm font-medium">{employees.find(e => e.id === empId)?.name || empId}</p>
-                          <p className="text-xs text-text-muted">{ov.modelName} · {ov.reason}</p>
-                        </div>
-                        <Button variant="ghost" size="sm" onClick={() => removeEmployeeModel.mutate(empId)}><Trash2 size={13} /></Button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </Card>
+                <Badge color="info">{Object.keys(agentCfg.positionConfig || {}).length} positions configured</Badge>
+              </div>
 
-              {/* Agent config per position */}
-              <Card>
-                <h3 className="text-sm font-semibold text-text-primary mb-1 flex items-center gap-2"><SlidersHorizontal size={15} className="text-primary" /> Memory & Context Settings</h3>
-                <p className="text-xs text-text-muted mb-4">Configure compaction, context window, and language per position or employee. Takes effect on next cold start.</p>
-                <div className="space-y-2">
-                  {positions.map(pos => {
-                    const cfg = agentCfg.positionConfig[pos.id] || {};
-                    const hasCfg = Object.keys(cfg).length > 0;
-                    return (
-                      <div key={pos.id} className="flex items-center gap-3 rounded-xl bg-surface-dim px-4 py-3">
-                        <div className="flex-1">
-                          <p className="text-sm font-medium">{pos.name}</p>
-                          {hasCfg ? (
-                            <p className="text-xs text-text-muted">
-                              {cfg.recentTurnsPreserve && `Memory: ${cfg.recentTurnsPreserve} turns · `}
-                              {cfg.maxTokens && `Max tokens: ${cfg.maxTokens} · `}
-                              {cfg.language && `Lang: ${cfg.language}`}
-                            </p>
-                          ) : <p className="text-xs text-text-muted">Default settings</p>}
-                        </div>
-                        <Button size="sm" variant="ghost" onClick={() => {
-                          setAgentCfgTarget({ type: 'pos', id: pos.id, name: pos.name });
-                          setAgentCfgDraft(agentCfg.positionConfig[pos.id] || {});
-                        }}>Configure</Button>
-                      </div>
-                    );
-                  })}
+              {/* KB Assignments — now in Knowledge Base */}
+              <div className="rounded-xl border border-dark-border/40 bg-surface-dim px-4 py-3 flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-medium text-text-primary">Knowledge Base Assignments</p>
+                  <p className="text-xs text-text-muted">Configure in Knowledge Base → Assignments tab</p>
                 </div>
-              </Card>
-
-              {/* KB assignments per position */}
-              <Card>
-                <h3 className="text-sm font-semibold text-text-primary mb-1 flex items-center gap-2"><BookOpen size={15} className="text-primary" /> Knowledge Base Assignments</h3>
-                <p className="text-xs text-text-muted mb-4">Assign knowledge bases to positions. Agents will have those documents available in their workspace during sessions.</p>
-                <div className="space-y-2">
-                  {positions.map(pos => {
-                    const assignedIds: string[] = kbAssign.positionKBs[pos.id] || [];
-                    const assignedNames = assignedIds.map(id => (kbs as any[]).find((k: any) => k.id === id)?.name || id);
-                    return (
-                      <div key={pos.id} className="flex items-center gap-3 rounded-xl bg-surface-dim px-4 py-3">
-                        <div className="flex-1">
-                          <p className="text-sm font-medium">{pos.name}</p>
-                          {assignedNames.length > 0
-                            ? <div className="flex flex-wrap gap-1 mt-1">{assignedNames.map(n => <Badge key={n} color="info">{n}</Badge>)}</div>
-                            : <p className="text-xs text-text-muted">No KBs assigned</p>}
-                        </div>
-                        <Button size="sm" variant="ghost" onClick={() => {
-                          setKBTarget({ type: 'pos', id: pos.id, name: pos.name });
-                          setKBDraft(assignedIds);
-                        }}>Edit</Button>
-                      </div>
-                    );
-                  })}
-                </div>
-              </Card>
+                <Badge color="info">{Object.keys((kbAssignData?.positionKBs || {})).length} positions assigned</Badge>
+              </div>
 
               <div className="rounded-xl bg-info/5 border border-info/20 px-4 py-3 text-xs text-info">
-                All changes take effect on the next agent cold start (~15 min idle timeout). Actual Bedrock billing may differ slightly from estimated costs.
+                Model changes take effect on the next agent cold start (~15 min idle timeout). Actual Bedrock billing may differ slightly from estimated costs.
               </div>
             </div>
           )}
         </div>
       </Card>
 
-      {/* Model change modal */}
+      {/* Model change modal — default/fallback only; overrides are in Agent Factory */}
       {modelModal && (
         <Modal open={true} onClose={() => setModelModal(null)}
-          title={modelModal === 'default' ? 'Change Default Model' : modelModal === 'fallback' ? 'Change Fallback Model' : modelModal === 'employee' ? 'Add Employee Model Override' : 'Add Position Override'}
+          title={modelModal === 'default' ? 'Change Default Model' : 'Change Fallback Model'}
           footer={<div className="flex justify-end gap-3"><Button variant="default" onClick={() => setModelModal(null)}>Cancel</Button><Button variant="primary" onClick={handleModelSave}>Apply</Button></div>}>
           <div className="space-y-4">
-            {modelModal === 'override' && (
-              <Select label="Position" value={overridePosId} onChange={setOverridePosId}
-                options={positions.filter(p => !(m.positionOverrides || {})[p.id]).map(p => ({ label: p.name, value: p.id }))}
-                placeholder="Select position..." />
-            )}
-            {modelModal === 'employee' && (
-              <Select label="Employee" value={overrideEmpId} onChange={setOverrideEmpId}
-                options={employees.map(e => ({ label: `${e.name} — ${e.positionName}`, value: e.id }))}
-                placeholder="Select employee..." />
-            )}
             <Select label="Model" value={selectedModelId} onChange={setSelectedModelId} options={modelOptions} placeholder="Select model..." />
-            {(modelModal === 'override' || modelModal === 'employee') && (
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-text-secondary">Reason</label>
-                <input value={overrideReason} onChange={e => setOverrideReason(e.target.value)}
-                  className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary focus:border-primary/60 focus:outline-none"
-                  placeholder="e.g. Personal preference for concise responses" />
-              </div>
-            )}
           </div>
         </Modal>
       )}
 
-      {/* Agent Config modal */}
-      {agentCfgTarget && (
-        <Modal open={true} onClose={() => setAgentCfgTarget(null)}
-          title={`Agent Config — ${agentCfgTarget.name}`}
-          footer={<div className="flex justify-end gap-3">
-            <Button variant="default" onClick={() => setAgentCfgTarget(null)}>Cancel</Button>
-            <Button variant="primary" onClick={() => {
-              if (agentCfgTarget.type === 'pos') setPositionAgentCfg.mutate({ posId: agentCfgTarget.id, config: agentCfgDraft });
-              else setEmployeeAgentCfg.mutate({ empId: agentCfgTarget.id, config: agentCfgDraft });
-              setAgentCfgTarget(null);
-            }}>Save</Button>
-          </div>}>
-          <div className="space-y-4">
-            <p className="text-xs text-text-muted">Leave blank to use platform defaults.</p>
-            {[
-              { key: 'recentTurnsPreserve', label: 'Memory: recent turns to preserve', placeholder: '10', hint: 'How many recent turns the agent always keeps in context during compaction' },
-              { key: 'maxTokens', label: 'Max output tokens', placeholder: '16384', hint: 'Maximum tokens per response (model dependent)' },
-              { key: 'language', label: 'Default response language', placeholder: 'e.g. English, 中文, 日本語', hint: 'Agent will always respond in this language unless user writes in another' },
-            ].map(f => (
-              <div key={f.key}>
-                <label className="mb-1 block text-xs font-medium text-text-secondary">{f.label}</label>
-                <input value={agentCfgDraft[f.key] || ''} onChange={e => setAgentCfgDraft(d => ({ ...d, [f.key]: e.target.value }))}
-                  placeholder={f.placeholder}
-                  className="w-full rounded-xl border border-dark-border/60 bg-surface-dim px-4 py-2.5 text-sm text-text-primary focus:border-primary/60 focus:outline-none" />
-                <p className="text-[10px] text-text-muted mt-1">{f.hint}</p>
-              </div>
-            ))}
-          </div>
-        </Modal>
-      )}
-
-      {/* KB assignment modal */}
-      {kbTarget && (
-        <Modal open={true} onClose={() => setKBTarget(null)}
-          title={`Knowledge Bases — ${kbTarget.name}`}
-          footer={<div className="flex justify-end gap-3">
-            <Button variant="default" onClick={() => setKBTarget(null)}>Cancel</Button>
-            <Button variant="primary" onClick={() => {
-              if (kbTarget.type === 'pos') setPositionKBs.mutate({ posId: kbTarget.id, kbIds: kbDraft });
-              else setEmployeeKBs.mutate({ empId: kbTarget.id, kbIds: kbDraft });
-              setKBTarget(null);
-            }}>Save</Button>
-          </div>}>
-          <p className="text-xs text-text-muted mb-4">Select which knowledge bases agents in this {kbTarget.type === 'pos' ? 'position' : 'employee account'} can access. Documents are downloaded into the agent's workspace at session start.</p>
-          <div className="space-y-2">
-            {(kbs as any[]).length === 0 ? (
-              <p className="text-sm text-text-muted text-center py-6">No knowledge bases created yet. Add them in Knowledge Base.</p>
-            ) : (kbs as any[]).map((kb: any) => {
-              const checked = kbDraft.includes(kb.id);
-              return (
-                <label key={kb.id} className={`flex items-center gap-3 rounded-xl px-4 py-3 cursor-pointer ${checked ? 'bg-primary/10 border border-primary/30' : 'bg-surface-dim hover:bg-dark-hover'}`}>
-                  <input type="checkbox" checked={checked} onChange={() => setKBDraft(d => checked ? d.filter(x => x !== kb.id) : [...d, kb.id])} className="accent-primary" />
-                  <div>
-                    <p className="text-sm font-medium">{kb.name}</p>
-                    <p className="text-xs text-text-muted">{kb.description} · {kb.fileCount || 0} files</p>
-                  </div>
-                </label>
-              );
-            })}
-          </div>
-        </Modal>
-      )}
     </div>
   );
 }

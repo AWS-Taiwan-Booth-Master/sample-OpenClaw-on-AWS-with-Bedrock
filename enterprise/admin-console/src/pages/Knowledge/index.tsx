@@ -1,14 +1,22 @@
 import { useState } from 'react';
-import { BookOpen, Search, FolderOpen, Globe, Building2, FileText, Plus, Eye } from 'lucide-react';
+import { BookOpen, Search, FolderOpen, Globe, Building2, FileText, Plus, Eye, Link2, X } from 'lucide-react';
 import { Card, StatCard, Badge, Button, PageHeader, Table, Modal, Input, Select, Tabs, Textarea } from '../../components/ui';
-import { useKnowledgeBases, useUploadKnowledgeDoc } from '../../hooks/useApi';
+import { useKnowledgeBases, useUploadKnowledgeDoc, usePositions, useEmployees, useKBAssignments, useSetPositionKBs, useSetEmployeeKBs } from '../../hooks/useApi';
 import type { KnowledgeBaseItem } from '../../hooks/useApi';
 import { api } from '../../api/client';
 
 export default function KnowledgeBase_() {
   const { data: kbs = [], isLoading } = useKnowledgeBases();
+  const { data: positions = [] } = usePositions();
+  const { data: employees = [] } = useEmployees();
+  const { data: kbAssignData } = useKBAssignments();
+  const setPositionKBs = useSetPositionKBs();
+  const setEmployeeKBs = useSetEmployeeKBs();
   const uploadMut = useUploadKnowledgeDoc();
   const [activeTab, setActiveTab] = useState('all');
+  const [assignTarget, setAssignTarget] = useState<{ type: 'pos'|'emp'; id: string; name: string } | null>(null);
+  const [assignDraft, setAssignDraft] = useState<string[]>([]);
+  const kbAssign = kbAssignData || { positionKBs: {}, employeeKBs: {} };
   const [showUpload, setShowUpload] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
   const [showFile, setShowFile] = useState<{ name: string; content: string } | null>(null);
@@ -76,10 +84,92 @@ export default function KnowledgeBase_() {
             { id: 'all', label: 'All', count: kbs.length },
             { id: 'global', label: 'Organization', count: globalKBs.length },
             { id: 'department', label: 'Department', count: deptKBs.length },
+            { id: 'assignments', label: 'Assignments' },
           ]}
           activeTab={activeTab}
           onChange={setActiveTab}
         />
+
+        {/* KB Assignments tab */}
+        {activeTab === 'assignments' && (
+          <div className="mt-4 space-y-6">
+            <div className="rounded-xl bg-info/5 border border-info/20 px-4 py-3 text-xs text-info">
+              Assign knowledge bases to positions or individual employees. Agents download and read these documents at session start, enabling them to answer questions using your company's knowledge.
+            </div>
+
+            {/* Per-Position */}
+            <div>
+              <h3 className="text-sm font-semibold text-text-primary mb-3 flex items-center gap-2">
+                <Globe size={15} className="text-primary" /> By Position
+              </h3>
+              <div className="space-y-2">
+                {positions.map(pos => {
+                  const assigned: string[] = (kbAssign.positionKBs as any)[pos.id] || [];
+                  const assignedKBs = assigned.map(id => kbs.find(k => k.id === id)).filter(Boolean);
+                  return (
+                    <div key={pos.id} className="flex items-center gap-3 rounded-xl bg-surface-dim px-4 py-3">
+                      <div className="flex-1">
+                        <p className="text-sm font-medium text-text-primary">{pos.name}</p>
+                        <p className="text-xs text-text-muted">{pos.departmentName}</p>
+                        {assignedKBs.length > 0 && (
+                          <div className="flex flex-wrap gap-1 mt-1.5">
+                            {assignedKBs.map(kb => kb && <Badge key={kb.id} color="info">{kb.name}</Badge>)}
+                          </div>
+                        )}
+                      </div>
+                      <Button size="sm" variant={assigned.length > 0 ? 'default' : 'ghost'}
+                        onClick={() => { setAssignTarget({ type: 'pos', id: pos.id, name: pos.name }); setAssignDraft(assigned); }}>
+                        <Link2 size={12} /> {assigned.length > 0 ? `${assigned.length} KB` : 'Assign'}
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Per-Employee (show only if they have individual overrides) */}
+            {Object.keys(kbAssign.employeeKBs || {}).length > 0 && (
+              <div>
+                <h3 className="text-sm font-semibold text-text-primary mb-3 flex items-center gap-2">
+                  <FileText size={15} className="text-primary" /> Individual Employee Overrides
+                </h3>
+                <div className="space-y-2">
+                  {Object.entries(kbAssign.employeeKBs || {}).map(([empId, kbIds]: [string, any]) => {
+                    const emp = employees.find(e => e.id === empId);
+                    if (!emp) return null;
+                    return (
+                      <div key={empId} className="flex items-center gap-3 rounded-xl bg-surface-dim px-4 py-3">
+                        <div className="flex-1">
+                          <p className="text-sm font-medium">{emp.name}</p>
+                          <div className="flex gap-1 mt-1">{(kbIds as string[]).map(id => { const kb = kbs.find(k => k.id === id); return kb ? <Badge key={id} color="success">{kb.name}</Badge> : null; })}</div>
+                        </div>
+                        <Button size="sm" variant="ghost"
+                          onClick={() => setPositionKBs.mutate({ posId: empId, kbIds: [] })}>
+                          <X size={12} /> Clear
+                        </Button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Add individual employee override */}
+            <div className="text-center pt-2">
+              <p className="text-xs text-text-muted">To add an individual employee override, select an employee below:</p>
+              <div className="flex gap-2 justify-center mt-2">
+                <select className="rounded-xl border border-dark-border/60 bg-surface-dim px-3 py-2 text-sm text-text-primary focus:outline-none"
+                  onChange={e => e.target.value && setAssignTarget({ type: 'emp', id: e.target.value, name: employees.find(emp => emp.id === e.target.value)?.name || e.target.value })}>
+                  <option value="">Select employee...</option>
+                  {employees.map(e => <option key={e.id} value={e.id}>{e.name} — {e.positionName}</option>)}
+                </select>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* KB list tabs */}
+        {activeTab !== 'assignments' && (
         <div className="mt-4">
           <Table
             columns={[
@@ -99,7 +189,44 @@ export default function KnowledgeBase_() {
             data={tabData[activeTab] || []}
           />
         </div>
+        )}
       </Card>
+
+      {/* KB Assignment Modal */}
+      {assignTarget && (
+        <Modal open={true} onClose={() => setAssignTarget(null)}
+          title={`Assign Knowledge Bases — ${assignTarget.name}`}
+          footer={
+            <div className="flex justify-end gap-3">
+              <Button variant="default" onClick={() => setAssignTarget(null)}>Cancel</Button>
+              <Button variant="primary" onClick={() => {
+                if (assignTarget.type === 'pos') setPositionKBs.mutate({ posId: assignTarget.id, kbIds: assignDraft });
+                else setEmployeeKBs.mutate({ empId: assignTarget.id, kbIds: assignDraft });
+                setAssignTarget(null);
+              }}>Save</Button>
+            </div>
+          }>
+          <p className="text-xs text-text-muted mb-4">
+            Agents in this {assignTarget.type === 'pos' ? 'position' : 'account'} will download these documents into their workspace at session start.
+          </p>
+          <div className="space-y-2">
+            {kbs.length === 0 ? (
+              <p className="text-sm text-text-muted text-center py-6">No knowledge bases yet. Create one first.</p>
+            ) : kbs.map(kb => {
+              const checked = assignDraft.includes(kb.id);
+              return (
+                <label key={kb.id} className={`flex items-start gap-3 rounded-xl px-4 py-3 cursor-pointer transition-colors ${checked ? 'bg-primary/10 border border-primary/30' : 'bg-surface-dim hover:bg-dark-hover'}`}>
+                  <input type="checkbox" checked={checked} onChange={() => setAssignDraft(d => checked ? d.filter(x => x !== kb.id) : [...d, kb.id])} className="accent-primary mt-0.5" />
+                  <div>
+                    <p className="text-sm font-medium text-text-primary">{kb.name}</p>
+                    <p className="text-xs text-text-muted">{kb.accessibleBy} · {kb.docCount} docs</p>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        </Modal>
+      )}
 
       {/* KB Detail Drawer */}
       {selectedKb && (
