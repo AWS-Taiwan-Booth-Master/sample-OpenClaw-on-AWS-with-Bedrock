@@ -4924,10 +4924,10 @@ def disable_twin(authorization: str = Header(default="")):
     return {"active": False}
 
 
-# ── Personal Always-on (Portal self-service) ──────────────────────────────────
-# Employees can start/stop their own personal ECS Fargate container.
-# Uses emp_id as the agent_id so SSM paths are /always-on/{emp_id}/endpoint etc.
-# The container runs with the employee's personal workspace (S3 or EFS), NOT shared.
+# ── Always-on management for individual employees (IT admin only) ─────────────
+# IT admin assigns deployment mode (always-on vs serverless) per agent in
+# Agent Factory. Employees do not self-manage this — it is an IT governance decision.
+# Digital Twin works with both modes (Tenant Router is mode-agnostic).
 
 def _launch_personal_always_on(emp_id: str, emp_name: str) -> dict:
     """Start a personal ECS Fargate task for a single employee.
@@ -5016,90 +5016,6 @@ def _launch_personal_always_on(emp_id: str, emp_name: str) -> dict:
 
     return {"started": True, "empId": emp_id, "taskArn": task_arn,
             "note": "Personal container starting (~30s). Scheduled tasks will be active once running."}
-
-
-@app.get("/api/v1/portal/always-on")
-def get_portal_always_on_status(authorization: str = Header(default="")):
-    """Employee: get their personal always-on container status."""
-    user = _require_auth(authorization)
-    emp_id = user.employee_id
-    stack = os.environ.get("STACK_NAME", "openclaw-multitenancy")
-    ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
-
-    task_arn = ""
-    endpoint = ""
-    ecs_status = "NOT_STARTED"
-
-    try:
-        task_arn = ssm.get_parameter(
-            Name=f"/openclaw/{stack}/always-on/{emp_id}/task-arn"
-        )["Parameter"]["Value"]
-    except Exception:
-        return {"running": False, "ecsStatus": "NOT_STARTED", "empId": emp_id}
-
-    try:
-        endpoint = ssm.get_parameter(
-            Name=f"/openclaw/{stack}/always-on/{emp_id}/endpoint"
-        )["Parameter"]["Value"]
-    except Exception:
-        pass
-
-    try:
-        import boto3 as _b3s
-        ecs_cfg = _get_ecs_config()
-        desc = _b3s.client("ecs", region_name=_GATEWAY_REGION).describe_tasks(
-            cluster=ecs_cfg["cluster"], tasks=[task_arn])
-        tasks = desc.get("tasks", [])
-        ecs_status = tasks[0].get("lastStatus", "UNKNOWN") if tasks else "NOT_FOUND"
-    except Exception:
-        pass
-
-    return {"running": ecs_status == "RUNNING", "ecsStatus": ecs_status,
-            "endpoint": endpoint or None, "taskArn": task_arn, "empId": emp_id}
-
-
-@app.post("/api/v1/portal/always-on")
-def start_portal_always_on(authorization: str = Header(default="")):
-    """Employee: start their personal always-on container."""
-    user = _require_auth(authorization)
-    return _launch_personal_always_on(user.employee_id, user.name)
-
-
-@app.delete("/api/v1/portal/always-on")
-def stop_portal_always_on(authorization: str = Header(default="")):
-    """Employee: stop their personal always-on container."""
-    user = _require_auth(authorization)
-    emp_id = user.employee_id
-    stack = os.environ.get("STACK_NAME", "openclaw-multitenancy")
-
-    task_arn = ""
-    try:
-        ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
-        task_arn = ssm.get_parameter(
-            Name=f"/openclaw/{stack}/always-on/{emp_id}/task-arn"
-        )["Parameter"]["Value"]
-    except Exception:
-        pass
-
-    if task_arn:
-        try:
-            import boto3 as _b3sp
-            ecs_cfg = _get_ecs_config()
-            _b3sp.client("ecs", region_name=_GATEWAY_REGION).stop_task(
-                cluster=ecs_cfg["cluster"], task=task_arn, reason="Stopped by employee")
-        except Exception as e:
-            print(f"[personal-always-on] stop failed: {e}")
-
-    # Remove SSM routing and task tracking
-    ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
-    for path in [f"/always-on/{emp_id}/task-arn", f"/always-on/{emp_id}/endpoint",
-                 f"/tenants/{emp_id}/always-on-agent"]:
-        try:
-            ssm.delete_parameter(Name=f"/openclaw/{stack}{path}")
-        except Exception:
-            pass
-
-    return {"stopped": True, "empId": emp_id, "taskArn": task_arn}
 
 
 # ── Public twin endpoints (NO auth required) ──────────────────────────────────

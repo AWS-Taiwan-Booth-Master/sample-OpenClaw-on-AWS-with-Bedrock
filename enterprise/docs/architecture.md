@@ -296,14 +296,16 @@ SSM: /openclaw/{stack}/always-on/{agent_id}/endpoint = "http://10.0.1.45:8080"
 ```
 The Tenant Router reads this endpoint to route requests. No port mapping required (ECS awsvpc networking).
 
-### 5.3 Personal Always-on (ECS Fargate) — Planned
+### 5.3 Personal Always-on (ECS Fargate) — IT Admin Assigned
 
-One ECS Fargate task per employee who opts in. Identical to Shared Always-on but:
+One ECS Fargate task assigned to a single employee by IT admin (via Agent Factory). Identical to Shared Always-on but:
 - Assigned to a single employee (`SSM: /tenants/{emp_id}/always-on-agent = {emp_id}`)
-- Workspace loaded from the employee's personal S3 path
+- Workspace loaded from the employee's personal S3/EFS path
 - `SHARED_AGENT_ID` not set (uses personal workspace paths)
 - No workspace collision (1:1 employee-to-container)
 - Enables reliable scheduled tasks for that employee
+
+**IT governance**: Whether an employee gets always-on or serverless is an IT decision made in Agent Factory, not a user self-service option. This keeps compute cost under organizational control.
 
 **Storage evolution for always-on (current → target)**:
 
@@ -813,6 +815,8 @@ L3 and L4 are enforced at the AWS infrastructure level. A Finance Analyst's Agen
 ### 12.1 Concept
 
 Every employee can generate a public URL for their agent. Anyone with the URL can chat with their AI representative — no login required.
+
+**Mode-agnostic**: Digital Twin works identically whether the employee's agent runs as a serverless AgentCore microVM or an always-on ECS container. The Tenant Router handles routing transparently — the Digital Twin endpoint just calls `/route` with `channel="twin"` and the employee's ID. The routing decision (AgentCore vs ECS) is made the same way as for any other message.
 
 ```
 Employee (Portal → My Profile → Digital Twin toggle ON)
