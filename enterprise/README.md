@@ -416,6 +416,45 @@ S3_BUCKET=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region
   --query 'Stacks[0].Outputs[?OutputKey==`TenantWorkspaceBucketName`].OutputValue' --output text)
 ```
 
+### Step 1.5: Build and Push Exec-Agent Image (Executive Tier)
+
+The Executive Runtime uses a separate Docker image with all skills pre-installed and Claude Sonnet 4.6 as the default model. Build and push it from the repo root:
+
+```bash
+ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+ECR_EXEC="${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com/openclaw-multitenancy-exec-agent"
+
+aws ecr get-login-password --region $REGION | \
+  docker login --username AWS --password-stdin "${ACCOUNT_ID}.dkr.ecr.${REGION}.amazonaws.com"
+
+docker build --platform linux/arm64 \
+  -f enterprise/exec-agent/Dockerfile \
+  -t "${ECR_EXEC}:latest" .
+
+docker push "${ECR_EXEC}:latest"
+```
+
+Then update the Exec Runtime to pick up the new image:
+
+```bash
+EXEC_RUNTIME_ID=$(aws ssm get-parameter \
+  --name "/openclaw/${STACK_NAME}/exec-runtime-id" \
+  --query Parameter.Value --output text --region $REGION 2>/dev/null)
+
+EXEC_ROLE=$(aws cloudformation describe-stacks --stack-name $STACK_NAME --region $REGION \
+  --query 'Stacks[0].Outputs[?OutputKey==`AgentContainerExecutionRoleArn`].OutputValue' --output text)
+
+aws bedrock-agentcore-control update-agent-runtime \
+  --agent-runtime-id "$EXEC_RUNTIME_ID" \
+  --agent-runtime-artifact "{\"containerConfiguration\":{\"containerUri\":\"${ECR_EXEC}:latest\"}}" \
+  --role-arn "$EXEC_ROLE" \
+  --network-configuration '{"networkMode":"PUBLIC"}' \
+  --environment-variables "{\"AWS_REGION\":\"${REGION}\",\"BEDROCK_MODEL_ID\":\"global.anthropic.claude-sonnet-4-6\",\"S3_BUCKET\":\"${S3_BUCKET}\",\"STACK_NAME\":\"${STACK_NAME}\",\"DYNAMODB_TABLE\":\"openclaw-enterprise\",\"DYNAMODB_REGION\":\"${DYNAMODB_REGION}\",\"SYNC_INTERVAL\":\"120\"}" \
+  --region $REGION
+```
+
+> The standard agent image (`openclaw-multitenancy-multitenancy-agent`) is built automatically by `deploy-multitenancy.sh`. You only need this step for the executive tier.
+
 ### Step 2: Create DynamoDB Table
 
 ```bash
@@ -457,6 +496,7 @@ python3 seed_knowledge.py        --region $DYNAMODB_REGION
 python3 seed_ssm_tenants.py --region $REGION --stack $STACK_NAME
 
 export S3_BUCKET=$S3_BUCKET
+export AWS_REGION=$REGION        # seed_skills_final.py and seed_workspaces.py read this
 python3 seed_skills_final.py
 python3 seed_workspaces.py
 python3 seed_all_workspaces.py   --bucket $S3_BUCKET

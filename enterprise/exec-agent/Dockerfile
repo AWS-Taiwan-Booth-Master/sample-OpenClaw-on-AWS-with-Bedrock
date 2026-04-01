@@ -36,7 +36,9 @@ RUN if [ "$TARGETARCH" = "arm64" ] || [ "$(uname -m)" = "aarch64" ]; then \
 RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g openclaw@latest clawhub@latest
+# Pin to 2026.3.24 — same as agent-container/Dockerfile.
+# 2026.3.28 broke Gateway mode stdout capture (server.py _invoke_openclaw_once).
+RUN npm install -g openclaw@2026.3.24 clawhub@latest
 
 # Executive tier: all skills pre-installed (no S3 hot-load needed)
 # Full tool set: shell, browser, file, code_execution, all integrations
