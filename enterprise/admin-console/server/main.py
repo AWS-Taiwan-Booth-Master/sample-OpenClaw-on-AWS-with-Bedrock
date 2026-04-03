@@ -4377,6 +4377,69 @@ def get_im_channels(authorization: str = Header(default="")):
     return result
 
 
+@app.post("/api/v1/admin/im-channels/{channel}/test")
+def test_im_channel(channel: str, authorization: str = Header(default="")):
+    """Verify bot credentials for a channel by calling a read-only platform API.
+    Does not send any messages. Returns {ok, botName, error}."""
+    _require_role(authorization, roles=["admin"])
+    try:
+        import requests as _rq
+        if channel == "telegram":
+            token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+            if not token:
+                return {"ok": False, "error": "TELEGRAM_BOT_TOKEN not set. Configure the bot via the OpenClaw Gateway UI (port 18789)."}
+            r = _rq.get(f"https://api.telegram.org/bot{token}/getMe", timeout=8)
+            if r.status_code == 200 and r.json().get("ok"):
+                bot = r.json()["result"]
+                return {"ok": True, "botName": bot.get("username", bot.get("first_name", ""))}
+            return {"ok": False, "error": f"Telegram API error: {r.json().get('description', r.status_code)}"}
+
+        elif channel == "feishu":
+            app_id = os.environ.get("FEISHU_APP_ID", "")
+            app_secret = os.environ.get("FEISHU_APP_SECRET", "")
+            if not app_id or not app_secret:
+                return {"ok": False, "error": "FEISHU_APP_ID / FEISHU_APP_SECRET not set. Configure via Gateway UI."}
+            r = _rq.post(
+                "https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal",
+                json={"app_id": app_id, "app_secret": app_secret}, timeout=8,
+            )
+            data = r.json()
+            if data.get("code") == 0:
+                return {"ok": True, "botName": app_id}
+            return {"ok": False, "error": f"Feishu auth error: {data.get('msg', r.status_code)}"}
+
+        elif channel == "discord":
+            token = os.environ.get("DISCORD_BOT_TOKEN", "")
+            if not token:
+                return {"ok": False, "error": "DISCORD_BOT_TOKEN not set. Configure via Gateway UI."}
+            r = _rq.get(
+                "https://discord.com/api/v10/users/@me",
+                headers={"Authorization": f"Bot {token}"}, timeout=8,
+            )
+            if r.status_code == 200:
+                data = r.json()
+                return {"ok": True, "botName": f"{data.get('username', '')}#{data.get('discriminator', '')}"}
+            return {"ok": False, "error": f"Discord API error: {r.status_code}"}
+
+        elif channel == "slack":
+            token = os.environ.get("SLACK_BOT_TOKEN", "")
+            if not token:
+                return {"ok": False, "error": "SLACK_BOT_TOKEN not set. Configure via Gateway UI."}
+            r = _rq.post(
+                "https://slack.com/api/auth.test",
+                headers={"Authorization": f"Bearer {token}"}, timeout=8,
+            )
+            data = r.json()
+            if data.get("ok"):
+                return {"ok": True, "botName": data.get("bot_id", data.get("user", ""))}
+            return {"ok": False, "error": f"Slack error: {data.get('error', 'unknown')}"}
+
+        else:
+            return {"ok": False, "error": f"Test Connection not yet supported for {channel}. Verify via OpenClaw Gateway UI."}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/api/v1/settings/services")
 def get_services():
     uptime_str = _format_uptime(time.time() - _SERVER_START_TIME)
