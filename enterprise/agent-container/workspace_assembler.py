@@ -321,13 +321,59 @@ def assemble_workspace(
     except Exception as e:
         logger.warning("CHANNELS.md generation failed (non-fatal): %s", e)
 
-    # 9. Generate IDENTITY.md if not present
+    # 9. Generate IDENTITY.md — always regenerate so it includes the employee's name.
+    # Without the name, the agent searches the KB to figure out who it is, which can
+    # return stale or wrong data (e.g. "张三" when it's actually WJD via Feishu).
     identity_path = os.path.join(workspace, "IDENTITY.md")
-    if not os.path.isfile(identity_path):
-        identity = f"# Agent Identity\n\n- **Position:** {pos_id}\n- **Tenant:** {tenant_id}\n- **Company:** ACME Corp\n- **Platform:** OpenClaw Enterprise\n"
-        with open(identity_path, "w") as f:
-            f.write(identity)
-        logger.info("Generated IDENTITY.md")
+    emp_name = ""
+    emp_no = ""
+    pos_name = ""
+    try:
+        import boto3 as _b3id
+        ddb_region = os.environ.get("DYNAMODB_REGION", "us-east-2")
+        ddb_table = os.environ.get("DYNAMODB_TABLE", "openclaw-enterprise")
+        ddb = _b3id.resource("dynamodb", region_name=ddb_region)
+        table = ddb.Table(ddb_table)
+        # Resolve emp_id from base_id (may already be emp-xxx after user-mapping earlier)
+        _b_id = tenant_id
+        _parts = tenant_id.split("__")
+        if len(_parts) >= 3:
+            _b_id = _parts[1]
+        elif len(_parts) == 2:
+            _b_id = _parts[1]
+        # If not emp-id, try MAPPING# lookup
+        if not _b_id.startswith("emp-"):
+            from boto3.dynamodb.conditions import Key as _KI, Attr as _AI
+            _scan = table.query(
+                KeyConditionExpression=_KI("PK").eq("ORG#acme") & _KI("SK").begins_with("MAPPING#"),
+                FilterExpression=_AI("channelUserId").eq(_b_id),
+            )
+            if _scan.get("Items"):
+                _b_id = _scan["Items"][0].get("employeeId", _b_id)
+        # Look up employee record
+        emp_resp = table.get_item(Key={"PK": "ORG#acme", "SK": f"EMP#{_b_id}"})
+        emp_item = emp_resp.get("Item", {})
+        emp_name = emp_item.get("name", "")
+        emp_no = emp_item.get("employeeNo", "")
+        pos_name = emp_item.get("positionName", pos_id)
+    except Exception as e:
+        logger.warning("IDENTITY.md employee lookup failed (non-fatal): %s", e)
+
+    identity_lines = [
+        "# Agent Identity",
+        "",
+        f"You are **{emp_name}**, a digital employee of ACME Corp." if emp_name else "You are a digital employee of ACME Corp.",
+        "",
+        f"- **Name:** {emp_name}" if emp_name else "",
+        f"- **Employee No:** {emp_no}" if emp_no else "",
+        f"- **Position:** {pos_name or pos_id}",
+        f"- **Company:** ACME Corp",
+        f"- **Platform:** OpenClaw Enterprise",
+    ]
+    identity = "\n".join(line for line in identity_lines if line is not None)
+    with open(identity_path, "w") as f:
+        f.write(identity + "\n")
+    logger.info("Generated IDENTITY.md for %s (%s)", emp_name or _b_id, pos_name or pos_id)
 
     return {
         "merged_soul_chars": len(merged_soul),
