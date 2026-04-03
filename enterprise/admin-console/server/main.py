@@ -4394,7 +4394,13 @@ def test_im_channel(channel: str, authorization: str = Header(default="")):
         )
         if result.stdout:
             import json as _json
-            raw = _json.loads(result.stdout)
+            # openclaw prints plugin registration logs (with ANSI codes) before the JSON blob.
+            # Find the first '{' to skip the preamble, same pattern used in server.py.
+            stdout = result.stdout
+            json_start = stdout.find('{')
+            if json_start == -1:
+                return {"ok": False, "error": "Unexpected openclaw output — no JSON found."}
+            raw = _json.loads(stdout[json_start:])
             configured = raw.get("chat", {})
             # channel name in openclaw may differ: "feishu" -> "feishu", "discord" -> "discord"
             channel_key = channel.lower()
