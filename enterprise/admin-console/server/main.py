@@ -5764,32 +5764,8 @@ def _get_ecs_config() -> dict:
     return {"cluster": cluster, "task_def": task_def, "subnet_id": subnet_id, "sg_id": sg_id}
 
 
-@app.post("/api/v1/admin/always-on/{agent_id}/start")
-def start_always_on_agent(agent_id: str, authorization: str = Header(default="")):
-    """Start an always-on ECS Fargate task for a shared agent."""
-    _require_role(authorization, roles=["admin"])
-    stack     = os.environ.get("STACK_NAME",      "openclaw-multitenancy")
-    bucket    = os.environ.get("S3_BUCKET",       f"openclaw-tenants-{_GATEWAY_ACCOUNT_ID}")
-    ddb_table = os.environ.get("DYNAMODB_TABLE",  "openclaw-enterprise")
-    ddb_region = os.environ.get("DYNAMODB_REGION", "us-east-2")
-
-    agent = db.get_agent(agent_id)
-    if not agent:
-        raise HTTPException(404, "Agent not found")
-
-    ecs_cfg = _get_ecs_config()
-    if not ecs_cfg["subnet_id"] or not ecs_cfg["sg_id"]:
-        raise HTTPException(500,
-            "ECS_SUBNET_ID and ECS_TASK_SG_ID are required. "
-            "Set them in /etc/openclaw/env or run the deploy script to write them to SSM.")
-
-    ecr_image = _ALWAYS_ON_ECR_IMAGE or (
-        f"{_GATEWAY_ACCOUNT_ID}.dkr.ecr.{_GATEWAY_REGION}.amazonaws.com"
-        f"/{stack}-multitenancy-agent:latest"
-    )
-
-    # Resolve per-agent bot tokens for Plan A direct IM connection
-    # IT stores these in SSM when provisioning always-on for an employee
+def _resolve_bot_tokens(stack: str, agent_id: str) -> tuple:
+    """Resolve Telegram/Discord bot tokens from SSM for Plan A direct IM."""
     telegram_token = ""
     discord_token = ""
     try:
@@ -5808,78 +5784,153 @@ def start_always_on_agent(agent_id: str, authorization: str = Header(default="")
             pass
     except Exception:
         pass
+    return telegram_token, discord_token
 
-    # Stop any existing task for this agent first
-    try:
-        ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
-        existing_arn = ssm.get_parameter(
-            Name=f"/openclaw/{stack}/always-on/{agent_id}/task-arn"
-        )["Parameter"]["Value"]
-        import boto3 as _b3ecs_stop
-        _b3ecs_stop.client("ecs", region_name=_GATEWAY_REGION).stop_task(
-            cluster=ecs_cfg["cluster"], task=existing_arn, reason="Restarted by admin")
-    except Exception:
-        pass
 
-    # Launch new ECS Fargate task
+def _build_agent_env(agent: dict, agent_id: str, stack: str, bucket: str,
+                     ddb_table: str, ddb_region: str,
+                     telegram_token: str, discord_token: str) -> list:
+    """Build environment variable list for ECS container."""
+    emp_id = agent.get("employeeId", agent_id)
+    session_id = f"personal__{emp_id}" if agent.get("employeeId") else f"shared__{agent_id}"
+    return [
+        {"name": "SESSION_ID",         "value": session_id},
+        {"name": "SHARED_AGENT_ID",    "value": agent_id},
+        {"name": "S3_BUCKET",          "value": bucket},
+        {"name": "STACK_NAME",         "value": stack},
+        {"name": "AWS_REGION",         "value": _GATEWAY_REGION},
+        {"name": "DYNAMODB_TABLE",     "value": ddb_table},
+        {"name": "DYNAMODB_REGION",    "value": ddb_region},
+        {"name": "SYNC_INTERVAL",      "value": "120"},
+        {"name": "EFS_ENABLED",        "value": "true"},
+        {"name": "TELEGRAM_BOT_TOKEN", "value": telegram_token},
+        {"name": "DISCORD_BOT_TOKEN",  "value": discord_token},
+    ]
+
+
+def _ecs_service_name(agent_id: str) -> str:
+    """Derive ECS service name from agent_id (must be DNS-compatible)."""
+    import re as _re_svc
+    return _re_svc.sub(r"[^a-zA-Z0-9-]", "-", agent_id)[:32]
+
+
+@app.post("/api/v1/admin/always-on/{agent_id}/start")
+def start_always_on_agent(agent_id: str, authorization: str = Header(default="")):
+    """Start an always-on agent as an ECS Fargate Service (auto-restart on crash).
+    If the service already exists with desiredCount=0, scales it to 1.
+    If no service exists, creates one. Also stops any legacy RunTask tasks."""
+    _require_role(authorization, roles=["admin"])
+    stack     = os.environ.get("STACK_NAME",      "openclaw-multitenancy")
+    bucket    = os.environ.get("S3_BUCKET",       f"openclaw-tenants-{_GATEWAY_ACCOUNT_ID}")
+    ddb_table = os.environ.get("DYNAMODB_TABLE",  "openclaw-enterprise")
+    ddb_region = os.environ.get("DYNAMODB_REGION", "us-east-2")
+
+    agent = db.get_agent(agent_id)
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+
+    ecs_cfg = _get_ecs_config()
+    if not ecs_cfg["subnet_id"] or not ecs_cfg["sg_id"]:
+        raise HTTPException(500,
+            "ECS_SUBNET_ID and ECS_TASK_SG_ID are required. "
+            "Set them in /etc/openclaw/env or run the deploy script to write them to SSM.")
+
+    telegram_token, discord_token = _resolve_bot_tokens(stack, agent_id)
+    env_vars = _build_agent_env(agent, agent_id, stack, bucket,
+                                ddb_table, ddb_region, telegram_token, discord_token)
+    service_name = _ecs_service_name(agent_id)
+
     try:
         import boto3 as _b3ecs
         ecs = _b3ecs.client("ecs", region_name=_GATEWAY_REGION)
-        resp = ecs.run_task(
-            cluster=ecs_cfg["cluster"],
-            taskDefinition=ecs_cfg["task_def"],
-            launchType="FARGATE",
-            networkConfiguration={
-                "awsvpcConfiguration": {
-                    "subnets":        [ecs_cfg["subnet_id"]],
-                    "securityGroups": [ecs_cfg["sg_id"]],
-                    "assignPublicIp": "ENABLED",   # needed to pull ECR without NAT
-                }
-            },
-            overrides={
-                "containerOverrides": [{
-                    "name": "always-on-agent",
-                    # "image" is not a valid containerOverrides field; image is set in task def
-                    # Use the task definition's image (or update the task def revision for custom tags)
-                    "environment": [
-                        # For 1:1 employee agents: use personal__emp_id so entrypoint.sh
-                        # resolves BASE_TENANT_ID=emp_id → correct EFS/S3/SSM paths.
-                        # For shared N:1 agents: agent_id is the right anchor.
-                        {"name": "SESSION_ID",         "value": f"personal__{agent.get('employeeId', agent_id)}" if agent.get('employeeId') else f"shared__{agent_id}"},
-                        {"name": "SHARED_AGENT_ID",    "value": agent_id},
-                        {"name": "S3_BUCKET",          "value": bucket},
-                        {"name": "STACK_NAME",         "value": stack},
-                        {"name": "AWS_REGION",         "value": _GATEWAY_REGION},
-                        {"name": "DYNAMODB_TABLE",     "value": ddb_table},
-                        {"name": "DYNAMODB_REGION",    "value": ddb_region},
-                        {"name": "SYNC_INTERVAL",      "value": "120"},
-                        {"name": "EFS_ENABLED",        "value": "true"},
-                        # Plan A: direct IM — inject bot tokens if provisioned
-                        {"name": "TELEGRAM_BOT_TOKEN", "value": telegram_token},
-                        {"name": "DISCORD_BOT_TOKEN",  "value": discord_token},
-                    ],
-                }]
-            },
-            count=1,
-            tags=[
-                {"key": "agent_id",   "value": agent_id},
-                {"key": "stack_name", "value": stack},
-            ],
-        )
-        failures = resp.get("failures", [])
-        if failures:
-            raise RuntimeError(f"ECS RunTask failures: {failures}")
-        task_arn = resp["tasks"][0]["taskArn"]
-    except Exception as e:
-        raise HTTPException(500, f"Failed to start ECS task: {e}")
 
-    # Persist task ARN — endpoint is registered by entrypoint.sh once the task is RUNNING
-    try:
-        ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
-        ssm.put_parameter(Name=f"/openclaw/{stack}/always-on/{agent_id}/task-arn",
-                          Value=task_arn, Type="String", Overwrite=True)
+        # Stop any legacy RunTask task (pre-ECS-Service migration)
+        try:
+            ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
+            existing_arn = ssm.get_parameter(
+                Name=f"/openclaw/{stack}/always-on/{agent_id}/task-arn"
+            )["Parameter"]["Value"]
+            ecs.stop_task(cluster=ecs_cfg["cluster"], task=existing_arn,
+                         reason="Migrated to ECS Service")
+            ssm.delete_parameter(Name=f"/openclaw/{stack}/always-on/{agent_id}/task-arn")
+        except Exception:
+            pass
+
+        # Check if service already exists
+        service_exists = False
+        try:
+            desc = ecs.describe_services(cluster=ecs_cfg["cluster"], services=[service_name])
+            active = [s for s in desc.get("services", []) if s["status"] == "ACTIVE"]
+            if active:
+                service_exists = True
+        except Exception:
+            pass
+
+        # Register a new Task Definition revision with agent-specific env vars.
+        # ECS Services don't support runtime overrides like RunTask does —
+        # the environment must be baked into the task definition.
+        base_td = ecs.describe_task_definition(taskDefinition=ecs_cfg["task_def"])["taskDefinition"]
+
+        # Clean container definitions: remove fields that register_task_definition rejects
+        clean_containers = []
+        for cd in base_td.get("containerDefinitions", []):
+            clean_cd = {k: v for k, v in cd.items()
+                        if k not in ("cpu", "status", "taskDefinitionArn", "containerInstanceArn",
+                                     "networkBindings", "requiredAttributes")}
+            if clean_cd["name"] == "always-on-agent":
+                clean_cd["environment"] = env_vars
+            clean_containers.append(clean_cd)
+
+        agent_family = f"{stack}-ao-{service_name}"
+        agent_td = ecs.register_task_definition(
+            family=agent_family,
+            taskRoleArn=base_td["taskRoleArn"],
+            executionRoleArn=base_td["executionRoleArn"],
+            networkMode="awsvpc",
+            containerDefinitions=clean_containers,
+            volumes=base_td.get("volumes", []),
+            requiresCompatibilities=["FARGATE"],
+            cpu=base_td.get("cpu", "512"),
+            memory=base_td.get("memory", "1024"),
+            runtimePlatform={"cpuArchitecture": "ARM64", "operatingSystemFamily": "LINUX"},
+        )
+        agent_td_arn = agent_td["taskDefinition"]["taskDefinitionArn"]
+        print(f"[always-on] Registered task def: {agent_td_arn}")
+
+        if service_exists:
+            # Update existing service: new task def + scale to 1
+            ecs.update_service(
+                cluster=ecs_cfg["cluster"],
+                service=service_name,
+                taskDefinition=agent_td_arn,
+                desiredCount=1,
+                forceNewDeployment=True,
+            )
+            print(f"[always-on] Updated service {service_name} to desiredCount=1")
+        else:
+            # Create new service
+            ecs.create_service(
+                cluster=ecs_cfg["cluster"],
+                serviceName=service_name,
+                taskDefinition=agent_td_arn,
+                desiredCount=1,
+                launchType="FARGATE",
+                networkConfiguration={
+                    "awsvpcConfiguration": {
+                        "subnets":        [ecs_cfg["subnet_id"]],
+                        "securityGroups": [ecs_cfg["sg_id"]],
+                        "assignPublicIp": "ENABLED",
+                    }
+                },
+                tags=[
+                    {"key": "agent_id",   "value": agent_id},
+                    {"key": "stack_name", "value": stack},
+                ],
+            )
+            print(f"[always-on] Created service {service_name}")
+
     except Exception as e:
-        print(f"[always-on] SSM task-arn write failed: {e}")
+        raise HTTPException(500, f"Failed to start ECS service: {e}")
 
     # Update DynamoDB status
     try:
@@ -5887,41 +5938,52 @@ def start_always_on_agent(agent_id: str, authorization: str = Header(default="")
         ddb = _b3d.resource("dynamodb", region_name=ddb_region)
         ddb.Table(ddb_table).update_item(
             Key={"PK": "ORG#acme", "SK": f"AGENT#{agent_id}"},
-            UpdateExpression="SET deployMode = :m, containerStatus = :s, ecsTaskArn = :t",
-            ExpressionAttributeValues={":m": "always-on-ecs", ":s": "starting", ":t": task_arn},
+            UpdateExpression="SET deployMode = :m, containerStatus = :s, ecsServiceName = :sn",
+            ExpressionAttributeValues={":m": "always-on-ecs", ":s": "starting", ":sn": service_name},
         )
     except Exception as e:
         print(f"[always-on] DynamoDB update failed: {e}")
 
-    return {"started": True, "agentId": agent_id, "taskArn": task_arn,
-            "note": "Task is starting. Endpoint will be registered in SSM once RUNNING (~30s)."}
+    return {"started": True, "agentId": agent_id, "serviceName": service_name,
+            "note": "ECS Service created/scaled. Container starts in ~30s with auto-restart."}
 
 
 @app.post("/api/v1/admin/always-on/{agent_id}/stop")
 def stop_always_on_agent(agent_id: str, authorization: str = Header(default="")):
-    """Stop the always-on ECS Fargate task for an agent."""
+    """Stop the always-on agent by scaling its ECS Service to 0.
+    Service definition is preserved — start will scale back to 1."""
     _require_role(authorization, roles=["admin"])
     stack = os.environ.get("STACK_NAME", "openclaw-multitenancy")
+    service_name = _ecs_service_name(agent_id)
 
-    task_arn = ""
     try:
-        ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
-        task_arn = ssm.get_parameter(
-            Name=f"/openclaw/{stack}/always-on/{agent_id}/task-arn"
-        )["Parameter"]["Value"]
-    except Exception:
-        pass
+        import boto3 as _b3ecs2
+        ecs_cfg = _get_ecs_config()
+        ecs = _b3ecs2.client("ecs", region_name=_GATEWAY_REGION)
 
-    if task_arn:
+        # Scale ECS Service to 0 (preferred — keeps service definition)
         try:
-            import boto3 as _b3ecs2
-            ecs_cfg = _get_ecs_config()
-            _b3ecs2.client("ecs", region_name=_GATEWAY_REGION).stop_task(
-                cluster=ecs_cfg["cluster"], task=task_arn, reason="Stopped by admin")
-        except Exception as e:
-            print(f"[always-on] ECS stop_task failed: {e}")
+            ecs.update_service(
+                cluster=ecs_cfg["cluster"],
+                service=service_name,
+                desiredCount=0,
+            )
+            print(f"[always-on] Scaled service {service_name} to 0")
+        except ecs.exceptions.ServiceNotFoundException:
+            # No service — try legacy RunTask stop
+            try:
+                ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
+                task_arn = ssm.get_parameter(
+                    Name=f"/openclaw/{stack}/always-on/{agent_id}/task-arn"
+                )["Parameter"]["Value"]
+                ecs.stop_task(cluster=ecs_cfg["cluster"], task=task_arn,
+                             reason="Stopped by admin")
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[always-on] ECS stop failed: {e}")
 
-    # Clean up SSM entries
+    # Clean up SSM endpoint (task will deregister on SIGTERM, but clean up just in case)
     try:
         ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
         for suffix in ["/task-arn", "/endpoint"]:
@@ -5939,13 +6001,13 @@ def stop_always_on_agent(agent_id: str, authorization: str = Header(default=""))
         ddb = _b3d2.resource("dynamodb", region_name=ddb_region)
         ddb.Table(os.environ.get("DYNAMODB_TABLE", "openclaw-enterprise")).update_item(
             Key={"PK": "ORG#acme", "SK": f"AGENT#{agent_id}"},
-            UpdateExpression="SET deployMode = :m, containerStatus = :s, ecsTaskArn = :empty",
-            ExpressionAttributeValues={":m": "serverless", ":s": "stopped", ":empty": ""},
+            UpdateExpression="SET deployMode = :m, containerStatus = :s",
+            ExpressionAttributeValues={":m": "serverless", ":s": "stopped"},
         )
     except Exception:
         pass
 
-    return {"stopped": True, "agentId": agent_id, "taskArn": task_arn}
+    return {"stopped": True, "agentId": agent_id, "serviceName": service_name}
 
 
 @app.put("/api/v1/admin/always-on/{agent_id}/tokens")
@@ -5991,106 +6053,72 @@ def get_always_on_tokens(agent_id: str, authorization: str = Header(default=""))
 
 @app.post("/api/v1/admin/always-on/{agent_id}/reload")
 def reload_always_on_agent(agent_id: str, body: dict, authorization: str = Header(default="")):
-    """Reload an always-on container — stops and restarts it so config/SOUL changes take effect.
-    Optionally accepts imageTag to deploy a specific ECR image version."""
+    """Reload an always-on container via ECS Service force-new-deployment.
+    ECS gracefully replaces the running task with a fresh one using the latest image.
+    If env vars changed (bot tokens, config), re-registers the task definition first."""
     _require_role(authorization, roles=["admin"])
     stack = os.environ.get("STACK_NAME", "openclaw-multitenancy")
     bucket = os.environ.get("S3_BUCKET", f"openclaw-tenants-{_GATEWAY_ACCOUNT_ID}")
     ddb_table = os.environ.get("DYNAMODB_TABLE", "openclaw-enterprise")
     ddb_region = os.environ.get("DYNAMODB_REGION", "us-east-2")
-    image_tag = body.get("imageTag", "latest")
 
     agent = db.get_agent(agent_id)
     if not agent:
         raise HTTPException(404, "Agent not found")
 
     ecs_cfg = _get_ecs_config()
-    if not ecs_cfg["subnet_id"] or not ecs_cfg["sg_id"]:
-        raise HTTPException(500, "ECS config missing")
+    service_name = _ecs_service_name(agent_id)
 
-    # Build ECR image URI with optional tag override
-    ecr_image = (
-        f"{_GATEWAY_ACCOUNT_ID}.dkr.ecr.{_GATEWAY_REGION}.amazonaws.com"
-        f"/{stack}-multitenancy-agent:{image_tag}"
-    )
+    telegram_token, discord_token = _resolve_bot_tokens(stack, agent_id)
+    env_vars = _build_agent_env(agent, agent_id, stack, bucket,
+                                ddb_table, ddb_region, telegram_token, discord_token)
 
-    # Stop existing task
     try:
-        ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
-        old_arn = ssm.get_parameter(
-            Name=f"/openclaw/{stack}/always-on/{agent_id}/task-arn"
-        )["Parameter"]["Value"]
         import boto3 as _b3rl
-        _b3rl.client("ecs", region_name=_GATEWAY_REGION).stop_task(
-            cluster=ecs_cfg["cluster"], task=old_arn, reason=f"Reload by admin (image={image_tag})")
-    except Exception:
-        pass
+        ecs = _b3rl.client("ecs", region_name=_GATEWAY_REGION)
 
-    # Resolve bot tokens
-    telegram_token, discord_token = "", ""
-    try:
-        ssm_tok = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
-        for ch, key in [("telegram", "telegram-token"), ("discord", "discord-token")]:
-            try:
-                val = ssm_tok.get_parameter(
-                    Name=f"/openclaw/{stack}/always-on/{agent_id}/{key}",
-                    WithDecryption=True)["Parameter"]["Value"]
-                if ch == "telegram": telegram_token = val
-                else: discord_token = val
-            except Exception:
-                pass
-    except Exception:
-        pass
+        # Re-register task definition with latest env vars
+        base_td = ecs.describe_task_definition(taskDefinition=ecs_cfg["task_def"])["taskDefinition"]
+        clean_containers = []
+        for cd in base_td.get("containerDefinitions", []):
+            clean_cd = {k: v for k, v in cd.items()
+                        if k not in ("cpu", "status", "taskDefinitionArn", "containerInstanceArn",
+                                     "networkBindings", "requiredAttributes")}
+            if clean_cd["name"] == "always-on-agent":
+                clean_cd["environment"] = env_vars
+            clean_containers.append(clean_cd)
 
-    # Start new task
-    try:
-        import boto3 as _b3rl2
-        ecs = _b3rl2.client("ecs", region_name=_GATEWAY_REGION)
-        resp = ecs.run_task(
-            cluster=ecs_cfg["cluster"],
-            taskDefinition=ecs_cfg["task_def"],
-            launchType="FARGATE",
-            networkConfiguration={"awsvpcConfiguration": {
-                "subnets": [ecs_cfg["subnet_id"]],
-                "securityGroups": [ecs_cfg["sg_id"]],
-                "assignPublicIp": "ENABLED",
-            }},
-            overrides={"containerOverrides": [{
-                "name": "always-on-agent",
-                "environment": [
-                    {"name": "SESSION_ID",         "value": f"personal__{agent.get('employeeId', agent_id)}" if agent.get('employeeId') else f"shared__{agent_id}"},
-                    {"name": "SHARED_AGENT_ID",    "value": agent_id},
-                    {"name": "S3_BUCKET",          "value": bucket},
-                    {"name": "STACK_NAME",         "value": stack},
-                    {"name": "AWS_REGION",         "value": _GATEWAY_REGION},
-                    {"name": "DYNAMODB_TABLE",     "value": ddb_table},
-                    {"name": "DYNAMODB_REGION",    "value": ddb_region},
-                    {"name": "SYNC_INTERVAL",      "value": "120"},
-                    {"name": "EFS_ENABLED",        "value": "true"},
-                    {"name": "TELEGRAM_BOT_TOKEN", "value": telegram_token},
-                    {"name": "DISCORD_BOT_TOKEN",  "value": discord_token},
-                ],
-            }]},
-            count=1,
+        agent_family = f"{stack}-ao-{service_name}"
+        agent_td = ecs.register_task_definition(
+            family=agent_family,
+            taskRoleArn=base_td["taskRoleArn"],
+            executionRoleArn=base_td["executionRoleArn"],
+            networkMode="awsvpc",
+            containerDefinitions=clean_containers,
+            volumes=base_td.get("volumes", []),
+            requiresCompatibilities=["FARGATE"],
+            cpu=base_td.get("cpu", "512"),
+            memory=base_td.get("memory", "1024"),
+            runtimePlatform={"cpuArchitecture": "ARM64", "operatingSystemFamily": "LINUX"},
         )
-        failures = resp.get("failures", [])
-        if failures:
-            raise RuntimeError(f"ECS failures: {failures}")
-        task_arn = resp["tasks"][0]["taskArn"]
+        agent_td_arn = agent_td["taskDefinition"]["taskDefinitionArn"]
+
+        # Force new deployment — ECS replaces running task with new one
+        ecs.update_service(
+            cluster=ecs_cfg["cluster"],
+            service=service_name,
+            taskDefinition=agent_td_arn,
+            forceNewDeployment=True,
+        )
     except Exception as e:
         raise HTTPException(500, f"Reload failed: {e}")
 
-    # Update SSM + DynamoDB
-    ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
-    ssm.put_parameter(Name=f"/openclaw/{stack}/always-on/{agent_id}/task-arn",
-                      Value=task_arn, Type="String", Overwrite=True)
     try:
         import boto3 as _b3rl3
         _b3rl3.resource("dynamodb", region_name=ddb_region).Table(ddb_table).update_item(
             Key={"PK": "ORG#acme", "SK": f"AGENT#{agent_id}"},
-            UpdateExpression="SET deployMode = :m, containerStatus = :s, ecsTaskArn = :t, imageTag = :i",
-            ExpressionAttributeValues={":m": "always-on-ecs", ":s": "reloading",
-                                       ":t": task_arn, ":i": image_tag},
+            UpdateExpression="SET containerStatus = :s",
+            ExpressionAttributeValues={":s": "reloading"},
         )
     except Exception:
         pass
@@ -6099,10 +6127,10 @@ def reload_always_on_agent(agent_id: str, body: dict, authorization: str = Heade
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "eventType": "config_change", "actorId": "admin", "actorName": "Admin",
         "targetType": "agent", "targetId": agent_id,
-        "detail": f"Container reloaded with image tag '{image_tag}'", "status": "success",
+        "detail": f"Container reloaded via ECS Service force-new-deployment", "status": "success",
     })
-    return {"reloaded": True, "agentId": agent_id, "taskArn": task_arn, "imageTag": image_tag,
-            "note": "Container restarting (~30s). New SOUL/config will be active on next message."}
+    return {"reloaded": True, "agentId": agent_id, "serviceName": service_name,
+            "note": "ECS replacing container (~30s). New config active on next message."}
 
 
 @app.get("/api/v1/admin/always-on/{agent_id}/images")
@@ -6293,99 +6321,9 @@ def disable_twin(authorization: str = Header(default="")):
     return {"active": False}
 
 
-# ── Always-on management for individual employees (IT admin only) ─────────────
-# IT admin assigns deployment mode (always-on vs serverless) per agent in
-# Agent Factory. Employees do not self-manage this — it is an IT governance decision.
-# Digital Twin works with both modes (Tenant Router is mode-agnostic).
-
-def _launch_personal_always_on(emp_id: str, emp_name: str) -> dict:
-    """Start a personal ECS Fargate task for a single employee.
-    Returns the same shape as start_always_on_agent."""
-    stack     = os.environ.get("STACK_NAME",      "openclaw-multitenancy")
-    bucket    = os.environ.get("S3_BUCKET",       f"openclaw-tenants-{_GATEWAY_ACCOUNT_ID}")
-    ddb_table = os.environ.get("DYNAMODB_TABLE",  "openclaw-enterprise")
-    ddb_region = os.environ.get("DYNAMODB_REGION", "us-east-2")
-
-    ecs_cfg = _get_ecs_config()
-    if not ecs_cfg["subnet_id"] or not ecs_cfg["sg_id"]:
-        raise HTTPException(500, "ECS config missing — contact IT admin.")
-
-    ecr_image = _ALWAYS_ON_ECR_IMAGE or (
-        f"{_GATEWAY_ACCOUNT_ID}.dkr.ecr.{_GATEWAY_REGION}.amazonaws.com"
-        f"/{stack}-multitenancy-agent:latest"
-    )
-
-    # Stop any existing personal container first
-    try:
-        ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
-        existing_arn = ssm.get_parameter(
-            Name=f"/openclaw/{stack}/always-on/{emp_id}/task-arn"
-        )["Parameter"]["Value"]
-        import boto3 as _b3ep
-        _b3ep.client("ecs", region_name=_GATEWAY_REGION).stop_task(
-            cluster=ecs_cfg["cluster"], task=existing_arn, reason="Personal container restart")
-    except Exception:
-        pass
-
-    try:
-        import boto3 as _b3ep2
-        ecs = _b3ep2.client("ecs", region_name=_GATEWAY_REGION)
-        resp = ecs.run_task(
-            cluster=ecs_cfg["cluster"],
-            taskDefinition=ecs_cfg["task_def"],
-            launchType="FARGATE",
-            networkConfiguration={
-                "awsvpcConfiguration": {
-                    "subnets":        [ecs_cfg["subnet_id"]],
-                    "securityGroups": [ecs_cfg["sg_id"]],
-                    "assignPublicIp": "ENABLED",
-                }
-            },
-            overrides={
-                "containerOverrides": [{
-                    "name": "always-on-agent",
-                    # "image" is not a valid containerOverrides field; image is set in task def
-                    # Use the task definition's image (or update the task def revision for custom tags)
-                    "environment": [
-                        # Note: SHARED_AGENT_ID deliberately NOT set → personal workspace path
-                        {"name": "SESSION_ID",      "value": f"personal__{emp_id}"},
-                        {"name": "S3_BUCKET",       "value": bucket},
-                        {"name": "STACK_NAME",      "value": stack},
-                        {"name": "AWS_REGION",      "value": _GATEWAY_REGION},
-                        {"name": "DYNAMODB_TABLE",  "value": ddb_table},
-                        {"name": "DYNAMODB_REGION", "value": ddb_region},
-                        {"name": "SYNC_INTERVAL",   "value": "120"},
-                        {"name": "EFS_ENABLED",     "value": "true"},
-                    ],
-                }]
-            },
-            count=1,
-            tags=[
-                {"key": "agent_id",    "value": emp_id},
-                {"key": "agent_type",  "value": "personal"},
-                {"key": "stack_name",  "value": stack},
-            ],
-        )
-        failures = resp.get("failures", [])
-        if failures:
-            raise RuntimeError(f"ECS RunTask failures: {failures}")
-        task_arn = resp["tasks"][0]["taskArn"]
-    except Exception as e:
-        raise HTTPException(500, f"Failed to start personal container: {e}")
-
-    # Persist task ARN in SSM; endpoint registered by entrypoint.sh once RUNNING
-    ssm = _boto3_main.client("ssm", region_name=_GATEWAY_REGION)
-    try:
-        ssm.put_parameter(Name=f"/openclaw/{stack}/always-on/{emp_id}/task-arn",
-                          Value=task_arn, Type="String", Overwrite=True)
-        # Route this employee to their personal container
-        ssm.put_parameter(Name=f"/openclaw/{stack}/tenants/{emp_id}/always-on-agent",
-                          Value=emp_id, Type="String", Overwrite=True)
-    except Exception as e:
-        print(f"[personal-always-on] SSM write failed: {e}")
-
-    return {"started": True, "empId": emp_id, "taskArn": task_arn,
-            "note": "Personal container starting (~30s). Scheduled tasks will be active once running."}
+# _launch_personal_always_on() removed — use start_always_on_agent() for both
+# personal (1:1) and team (N:1) agents. The distinction is just how many
+# employees the admin assigns, not a separate infrastructure type.
 
 
 # ── Public twin endpoints (NO auth required) ──────────────────────────────────
