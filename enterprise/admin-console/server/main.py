@@ -723,12 +723,13 @@ def create_agent(body: dict):
         emp = next((e for e in db.get_employees() if e["id"] == emp_id), {})
         positions = db.get_positions()
         pos = next((p for p in positions if p["id"] == pos_id), {})
+        deploy_mode = body.get("deployMode", "serverless")
         db.create_binding({
             "employeeId": emp_id,
             "employeeName": emp.get("name", ""),
             "agentId": agent_id,
             "agentName": body.get("name", ""),
-            "mode": "1:1",
+            "mode": "1:1",  # kept for backward compat with existing binding queries
             "channel": channel,
             "status": "active",
             "source": "manual",
@@ -773,9 +774,13 @@ def create_agent(body: dict):
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "eventType": "config_change", "actorId": "admin", "actorName": "IT Admin",
             "targetType": "agent", "targetId": agent_id,
-            "detail": f"Created agent '{body.get('name')}' for {emp.get('name', emp_id)} ({pos.get('name', pos_id)})",
+            "detail": f"Created agent '{body.get('name')}' for {emp.get('name', emp_id)} ({pos.get('name', pos_id)}) [{deploy_mode}]",
             "status": "success",
         })
+
+        # 6. If always-on, mark as pending — admin starts from Agent Factory
+        if deploy_mode == "always-on-ecs":
+            agent["note"] = "Agent created with Always-on mode. Go to Agent Factory → Always-on tab → Start to launch the ECS container."
 
     return agent
 
