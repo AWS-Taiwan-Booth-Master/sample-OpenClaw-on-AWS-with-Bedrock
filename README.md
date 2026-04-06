@@ -230,6 +230,7 @@ Switch models with one CloudFormation parameter — no code changes:
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `OpenClawModel` | Nova 2 Lite | Bedrock model ID |
+| `OpenClawVersion` | 2026.3.24 | `2026.3.24` (default, no model approval needed, WeChat compatible), `2026.4.5` (auto-discovery, embeddings), or `latest` |
 | `InstanceType` | c7g.large | EC2 instance type |
 | `CreateVPCEndpoints` | false | Private networking (+$22/mo) |
 | `EnableSandbox` | true | Docker isolation for code execution |
