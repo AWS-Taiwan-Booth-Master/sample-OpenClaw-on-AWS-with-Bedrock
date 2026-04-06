@@ -156,10 +156,12 @@ def usage_by_agent():
     usage_map = _get_agent_usage_today()
     result = []
     for agent in agents:
+        if not agent.get("id"):
+            continue
         usage = usage_map.get(agent["id"], {"inputTokens": 0, "outputTokens": 0, "requests": 0, "cost": 0})
         result.append({
             "agentId": agent["id"],
-            "agentName": agent["name"],
+            "agentName": agent.get("name", agent["id"]),
             "employeeName": agent.get("employeeName", ""),
             "positionName": agent.get("positionName", ""),
             **usage,

@@ -299,7 +299,7 @@ async def proxy_gateway(path: str, request: Request, authorization: str = Header
             url=target,
             headers=headers,
             data=body if body else None,
-            timeout=30,
+            timeout=(3, 10),  # (connect_timeout, read_timeout) — fail fast if container unreachable
             allow_redirects=False,
         )
 
