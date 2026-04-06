@@ -78,10 +78,26 @@ echo "$BASE_TENANT_ID" > /tmp/base_tenant_id
 # =============================================================================
 OPENCLAW_CONFIG_DIR="$HOME/.openclaw"
 mkdir -p "$OPENCLAW_CONFIG_DIR"
+
+# Generate a random gateway token for this container instance
+# This token is stored in SSM so the admin console proxy can inject it
+GATEWAY_TOKEN=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
+export OPENCLAW_GATEWAY_TOKEN="$GATEWAY_TOKEN"
+
 sed -e "s|\${AWS_REGION}|${AWS_REGION}|g" \
     -e "s|\${BEDROCK_MODEL_ID}|${BEDROCK_MODEL_ID:-global.amazon.nova-2-lite-v1:0}|g" \
     /app/openclaw.json > "$OPENCLAW_CONFIG_DIR/openclaw.json"
 echo "[entrypoint] openclaw.json written to $OPENCLAW_CONFIG_DIR/openclaw.json"
+
+# Store gateway token in SSM so admin console proxy can authenticate
+if [ -n "${SHARED_AGENT_ID:-}" ]; then
+    aws ssm put-parameter \
+        --name "/openclaw/${STACK_NAME}/always-on/${SHARED_AGENT_ID}/gateway-token" \
+        --value "$GATEWAY_TOKEN" --type "SecureString" --overwrite \
+        --region "$AWS_REGION" 2>/dev/null \
+        && echo "[entrypoint] Gateway token stored in SSM for ${SHARED_AGENT_ID}" \
+        || echo "[entrypoint] WARNING: Gateway token SSM write failed"
+fi
 
 # =============================================================================
 # Step 0.55: Synchronous workspace assembly for always-on containers

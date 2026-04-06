@@ -37,7 +37,10 @@
     "mode": "local",
     "bind": "lan",
     "auth": {
-      "mode": "none"
+      "mode": "token"
+    },
+    "controlUi": {
+      "dangerouslyAllowHostHeaderOriginFallback": true
     }
   },
   "plugins": {
