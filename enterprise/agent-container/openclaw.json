@@ -40,7 +40,8 @@
       "mode": "token"
     },
     "controlUi": {
-      "allowedOrigins": ["*"]
+      "allowedOrigins": ["*"],
+      "allowInsecureAuth": true
     }
   },
   "plugins": {
