@@ -267,13 +267,64 @@ export default function IMChannels() {
     <div>
       <PageHeader
         title="IM Channels"
-        description="Monitor employee IM connections across all channels. Manage pairings and view session activity."
+        description={channels.filter(c => c.status === 'connected').length > 0
+          ? "Monitor employee IM connections across all channels. Manage pairings and view session activity."
+          : "Configure enterprise IM bots, then employees can pair from their Portal to chat with AI agents."
+        }
         actions={
           <Button variant="default" size="sm" onClick={handleRefresh} disabled={isFetching || connLoading}>
             <RefreshCw size={14} className={(isFetching || connLoading) ? 'animate-spin' : ''} /> Refresh
           </Button>
         }
       />
+
+      {/* First-time setup guide — shown when no bots are connected */}
+      {channels.filter(c => c.status === 'connected').length === 0 && !channelsLoading && (
+        <div className="mb-6 rounded-xl border-2 border-primary/30 bg-primary/5 px-5 py-4">
+          <h3 className="text-base font-semibold text-text-primary mb-2 flex items-center gap-2">
+            <Wifi size={18} className="text-primary" /> First-time IM Channel Setup
+          </h3>
+          <p className="text-sm text-text-secondary mb-3">
+            Connect your enterprise IM bots so employees can chat with their AI agents via Telegram, Discord, Feishu, etc.
+            You configure the bots <strong>once</strong> — then every employee can pair from their Portal.
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="rounded-lg bg-dark-bg border border-dark-border/50 px-3 py-2.5">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/20 text-primary text-xs font-bold">1</span>
+                <p className="text-sm font-medium text-text-primary">Open Gateway UI</p>
+              </div>
+              <p className="text-xs text-text-muted">
+                Port-forward to <code className="bg-dark-hover px-1 rounded">localhost:18789</code> via SSM, then open in browser.
+                Use the gateway token from SSM Parameter Store.
+              </p>
+            </div>
+            <div className="rounded-lg bg-dark-bg border border-dark-border/50 px-3 py-2.5">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/20 text-primary text-xs font-bold">2</span>
+                <p className="text-sm font-medium text-text-primary">Add Bot Tokens</p>
+              </div>
+              <p className="text-xs text-text-muted">
+                In Gateway UI → <strong>Channels</strong> → select a platform (e.g. Telegram) → paste your bot token → Save.
+                Repeat for each platform you want.
+              </p>
+            </div>
+            <div className="rounded-lg bg-dark-bg border border-dark-border/50 px-3 py-2.5">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/20 text-primary text-xs font-bold">3</span>
+                <p className="text-sm font-medium text-text-primary">Employees Pair</p>
+              </div>
+              <p className="text-xs text-text-muted">
+                Employees go to <strong>Portal → Connect IM</strong>, select the channel, and scan QR / send <code>/start</code>.
+                Each employee pairs to their own agent automatically.
+              </p>
+            </div>
+          </div>
+          <p className="text-xs text-text-muted mt-3">
+            After configuring, click <strong>Refresh</strong> above to see the updated bot status.
+          </p>
+        </div>
+      )}
 
       {/* Stats */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 mb-6">
