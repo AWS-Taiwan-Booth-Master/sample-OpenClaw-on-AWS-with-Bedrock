@@ -21,56 +21,39 @@ Login:
 
 ---
 
-## 2. Set Up IM Bots (via CLI on EC2)
+## 2. Set Up IM Bots
 
-SSM into the EC2 first:
+IM channel setup is the same as a standard OpenClaw EC2 deployment — SSM into the machine and use the Gateway Web UI.
+
 ```bash
-aws ssm start-session --target i-036bfe702e14e2866 --region us-west-2
-```
-
-Then switch to ubuntu user and configure IM channels:
-```bash
-sudo su - ubuntu
-
-# Add Telegram bot
-openclaw channels add telegram --token "YOUR_TELEGRAM_BOT_TOKEN"
-
-# Add Discord bot
-openclaw channels add discord --token "YOUR_DISCORD_BOT_TOKEN"
-
-# Add Slack bot
-openclaw channels add slack --token "xoxb-YOUR_SLACK_BOT_TOKEN"
-
-# Add Feishu bot
-openclaw channels add feishu --app-id "YOUR_APP_ID" --app-secret "YOUR_APP_SECRET"
-
-# Verify all channels
-openclaw channels list
-
-# Restart gateway to pick up changes
-systemctl --user restart openclaw-gateway
-```
-
-**Where to get bot tokens:**
-- **Telegram:** Message @BotFather on Telegram → `/newbot` → copy token
-- **Discord:** https://discord.com/developers/applications → New App → Bot → Copy Token
-- **Slack:** https://api.slack.com/apps → Create App → Bot User OAuth Token
-- **Feishu:** Feishu Admin Console → create bot → App ID + App Secret
-
-**Alternative: Gateway Web UI** (if you prefer a GUI)
-```bash
-# Terminal 2: Port forward
+# Terminal 2: Port forward to Gateway UI (keep open)
 aws ssm start-session --target i-036bfe702e14e2866 --region us-west-2 \
   --document-name AWS-StartPortForwardingSession \
   --parameters '{"portNumber":["18789"],"localPortNumber":["18789"]}'
+```
 
-# Get token
+Get gateway token:
+```bash
 aws ssm get-parameter \
   --name "/openclaw/openclaw-e2e-test/gateway-token" \
   --with-decryption --query Parameter.Value --output text --region us-west-2
+```
 
-# Open: http://localhost:18789/?token=<paste token>
-# → Channels → Add bot
+Open browser: `http://localhost:18789/?token=<paste token here>`
+
+→ **Channels** → select platform → follow the setup wizard
+
+**Each platform has its own setup process** — refer to the official OpenClaw channel guides:
+- Full documentation: https://docs.openclaw.ai/channels
+- Telegram, Discord, Slack, WhatsApp, Feishu/Lark, Microsoft Teams, Google Chat are all supported
+- The setup experience is the same as a standard single-instance OpenClaw deployment
+
+**Quick verify after setup:**
+```bash
+# SSM into EC2
+aws ssm start-session --target i-036bfe702e14e2866 --region us-west-2
+sudo su - ubuntu
+openclaw channels list
 ```
 
 ---

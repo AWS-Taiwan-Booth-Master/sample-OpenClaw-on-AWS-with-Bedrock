@@ -202,7 +202,7 @@ Go to **Skill Market** (sidebar):
 
 ### 4.5 Set Up IM Bots
 
-This connects the platform to Telegram, Discord, Slack, etc. so employees can chat with their agents via IM.
+This connects the platform to Telegram, Discord, Slack, etc. so employees can chat with their agents via IM. The setup is the same as a standard OpenClaw EC2 deployment — you SSM into the EC2 and use the Gateway Web UI.
 
 ```bash
 # From your local machine — port-forward to Gateway UI:
@@ -220,11 +220,17 @@ aws ssm get-parameter \
 
 **Open browser:** `http://localhost:18789/?token=<TOKEN>`
 
-**In Gateway UI → Channels → Add:**
-- **Telegram:** Create bot via @BotFather → paste token
-- **Discord:** Create app at discord.com/developers → Bot tab → paste token
-- **Slack:** Create app at api.slack.com/apps → paste Bot OAuth Token
-- **Feishu:** Create bot in Feishu Admin → paste App ID + App Secret
+Go to **Channels** → select platform → follow the setup wizard. Each platform (Telegram, Discord, Slack, WhatsApp, Feishu/Lark, Microsoft Teams, Google Chat) has its own setup flow.
+
+**Full channel documentation:** https://docs.openclaw.ai/channels
+
+**Verify after setup:**
+```bash
+# SSM into EC2
+aws ssm start-session --target <INSTANCE_ID> --region <REGION>
+sudo su - ubuntu
+openclaw channels list
+```
 
 After adding, go back to Admin Console → **IM Channels** → click **Refresh** → status should show "Bot Active".
 
