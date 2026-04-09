@@ -111,7 +111,7 @@ def _resolve_emp_id(raw_id: str, channel: str) -> str:
 
 
 def _get_position_for_emp(emp_id: str) -> str:
-    """Get positionId for an employee from DynamoDB (fallback: SSM)."""
+    """Get positionId for an employee from DynamoDB."""
     try:
         ddb = boto3.resource("dynamodb", region_name=DYNAMODB_REGION)
         table = ddb.Table(DYNAMODB_TABLE)
@@ -121,13 +121,7 @@ def _get_position_for_emp(emp_id: str) -> str:
             return item["positionId"]
     except Exception as e:
         logger.debug("DynamoDB employee lookup failed: %s", e)
-    # SSM fallback
-    try:
-        ssm = boto3.client("ssm", region_name=AWS_REGION)
-        resp = ssm.get_parameter(Name=f"/openclaw/{STACK_NAME}/tenants/{emp_id}/position")
-        return resp["Parameter"]["Value"]
-    except Exception:
-        return ""
+    return ""
 
 
 def _get_runtime_id_for_tenant(base_id: str) -> str:
@@ -160,28 +154,6 @@ def _get_runtime_id_for_tenant(base_id: str) -> str:
         _runtime_cache_ts[cache_key] = now
         logger.info("Runtime (position DDB %s) %s → %s", pos_id, base_id, runtime)
         return runtime
-
-    # SSM fallback (backward compat during transition)
-    ssm = boto3.client("ssm", region_name=AWS_REGION)
-    try:
-        resp = ssm.get_parameter(Name=f"/openclaw/{STACK_NAME}/tenants/{base_id}/runtime-id")
-        runtime = resp["Parameter"]["Value"]
-        _runtime_cache[cache_key] = runtime
-        _runtime_cache_ts[cache_key] = now
-        logger.info("Runtime (employee SSM fallback) %s → %s", base_id, runtime)
-        return runtime
-    except Exception:
-        pass
-    if pos_id:
-        try:
-            resp = ssm.get_parameter(Name=f"/openclaw/{STACK_NAME}/positions/{pos_id}/runtime-id")
-            runtime = resp["Parameter"]["Value"]
-            _runtime_cache[cache_key] = runtime
-            _runtime_cache_ts[cache_key] = now
-            logger.info("Runtime (position SSM fallback %s) %s → %s", pos_id, base_id, runtime)
-            return runtime
-        except Exception:
-            pass
 
     # Tier 3: default
     logger.info("Runtime (default) %s → %s", base_id, RUNTIME_ID)

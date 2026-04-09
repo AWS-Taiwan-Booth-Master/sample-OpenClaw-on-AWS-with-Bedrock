@@ -177,17 +177,8 @@ def create_agent(body: dict):
             "pos-legal": ["web_search", "file"],
             "pos-exec": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
         }
-        tools = pos_tools.get(pos_id, ["web_search"])
-        try:
-            ssm = ssm_client()
-            ssm.put_parameter(Name=f"/openclaw/{stack}/tenants/{emp_id}/position",
-                              Value=pos_id, Type="String", Overwrite=True)
-            ssm.put_parameter(
-                Name=f"/openclaw/{stack}/tenants/{emp_id}/permissions",
-                Value=json.dumps({"profile": "auto", "tools": tools, "role": pos_id.replace("pos-", "")}),
-                Type="String", Overwrite=True)
-        except Exception as e:
-            print(f"[create_agent] SSM write failed for {emp_id}: {e}")
+        # Position and permissions are now read from DynamoDB (EMP#/POS# records).
+        # No SSM writes needed.
 
         # 2. Create binding (employee -> agent)
         now = datetime.now(timezone.utc).isoformat()

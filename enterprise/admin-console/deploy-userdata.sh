@@ -42,7 +42,7 @@ AWS_REGION="$DYNAMODB_REGION" python3 seed_roles.py --region "$DYNAMODB_REGION"
 AWS_REGION="$DYNAMODB_REGION" python3 seed_audit_approvals.py --region "$DYNAMODB_REGION"
 AWS_REGION="$DYNAMODB_REGION" python3 seed_settings.py --region "$DYNAMODB_REGION"
 AWS_REGION="$DYNAMODB_REGION" python3 seed_knowledge.py --region "$DYNAMODB_REGION"
-AWS_REGION="$DYNAMODB_REGION" python3 seed_ssm_tenants.py --region "${SSM_REGION:-us-east-1}" --stack "${STACK_NAME:-openclaw-enterprise}"
+# tenant→position mappings are now in DynamoDB (EMP# records), no SSM seeding needed
 
 # Start the server
 cat > /etc/systemd/system/openclaw-admin.service << 'SVCEOF'

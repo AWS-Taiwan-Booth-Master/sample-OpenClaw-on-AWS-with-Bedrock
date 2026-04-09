@@ -1,7 +1,7 @@
 """
 Permission profile management.
 
-Reads/writes per-tenant permission profiles from SSM Parameter Store.
+Reads per-tenant permission profiles from DynamoDB (position toolAllowlist).
 Profiles are injected into openclaw's system prompt (Plan A enforcement).
 """
 import json
@@ -18,21 +18,14 @@ from botocore.exceptions import ClientError
 logger = logging.getLogger(__name__)
 
 STACK_NAME = os.environ.get("STACK_NAME", "dev")
+DYNAMODB_TABLE = os.environ.get("DYNAMODB_TABLE", "openclaw-enterprise")
+DYNAMODB_REGION = os.environ.get("DYNAMODB_REGION", os.environ.get("AWS_REGION", "us-east-1"))
 
-PROFILES = {
-    "basic": {
-        "profile": "basic",
-        "tools": ["web_search"],
-        "data_permissions": {"file_paths": [], "api_endpoints": []},
-    },
-    "advanced": {
-        "profile": "advanced",
-        "tools": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
-        "data_permissions": {"file_paths": [], "api_endpoints": []},
-    },
+DEFAULT_PROFILE = {
+    "profile": "basic",
+    "tools": ["web_search"],
+    "data_permissions": {"file_paths": [], "api_endpoints": []},
 }
-
-DEFAULT_PROFILE = PROFILES["basic"]
 
 # Always blocked for standard agents — arbitrary code execution risk.
 # Exec profile bypasses Plan A entirely so this only applies to non-exec.
@@ -47,10 +40,6 @@ class PermissionDeniedError(Exception):
         super().__init__(f"Permission denied: tenant={tenant_id} tool={tool}")
 
 
-def _ssm_client():
-    return boto3.client("ssm", region_name=os.environ.get("AWS_REGION", "us-east-1"))
-
-
 def _base_tenant_id(tenant_id: str) -> str:
     """Extract base employee ID from session tenant_id.
 
@@ -58,7 +47,7 @@ def _base_tenant_id(tenant_id: str) -> str:
       channel__emp_id__hash  → emp_id   (e.g. tg__emp-wjd__abc123)
       channel__emp_id        → emp_id   (e.g. port__emp-wjd)
       emp-wjd                → emp-wjd  (direct)
-    Permissions are stored under base employee ID, not session-specific IDs.
+    Permissions are stored per position in DynamoDB, resolved via employee record.
     """
     parts = tenant_id.split("__")
     if len(parts) >= 2:
@@ -66,38 +55,38 @@ def _base_tenant_id(tenant_id: str) -> str:
     return tenant_id
 
 
-def _permissions_ssm_path(tenant_id: str) -> str:
-    return f"/openclaw/{STACK_NAME}/tenants/{tenant_id}/permissions"
-
-
 def read_permission_profile(tenant_id: str) -> dict:
-    """Read tenant's Permission_Profile from SSM. Falls back to basic.
+    """Read tenant's permission profile from DynamoDB.
 
-    Resolves base employee ID from session tenant_id so permissions stored
-    under emp-wjd are found even when called with tg__emp-wjd__HASH.
+    Resolution: tenant_id → emp_id → EMP#{emp_id}.positionId → POS#{pos}.toolAllowlist
+    Falls back to basic profile if lookup fails.
     """
     base_id = _base_tenant_id(tenant_id)
-    ssm = _ssm_client()
-    path = _permissions_ssm_path(base_id)
     try:
-        response = ssm.get_parameter(Name=path)
-        return json.loads(response["Parameter"]["Value"])
-    except ssm.exceptions.ParameterNotFound:
-        return dict(DEFAULT_PROFILE)
-    except ClientError as e:
-        logger.error("SSM read failed tenant_id=%s base_id=%s error=%s", tenant_id, base_id, e)
-        raise
+        ddb = boto3.resource("dynamodb", region_name=DYNAMODB_REGION)
+        table = ddb.Table(DYNAMODB_TABLE)
 
+        # Get employee's position
+        emp_resp = table.get_item(Key={"PK": "ORG#acme", "SK": f"EMP#{base_id}"})
+        emp_item = emp_resp.get("Item", {})
+        pos_id = emp_item.get("positionId", "")
 
-def write_permission_profile(tenant_id: str, profile: dict) -> None:
-    """Write tenant's Permission_Profile to SSM."""
-    ssm = _ssm_client()
-    ssm.put_parameter(
-        Name=_permissions_ssm_path(tenant_id),
-        Value=json.dumps(profile),
-        Type="String",
-        Overwrite=True,
-    )
+        if pos_id:
+            # Get position's tool allowlist
+            pos_resp = table.get_item(Key={"PK": "ORG#acme", "SK": f"POS#{pos_id}"})
+            pos_item = pos_resp.get("Item", {})
+            tools = pos_item.get("toolAllowlist", ["web_search"])
+            role = pos_id.replace("pos-", "")
+            return {
+                "profile": role,
+                "role": role,
+                "tools": tools,
+                "data_permissions": {"file_paths": [], "api_endpoints": []},
+            }
+    except Exception as e:
+        logger.warning("DynamoDB permission lookup failed for %s: %s", base_id, e)
+
+    return dict(DEFAULT_PROFILE)
 
 
 def _log_permission_denied(tenant_id: str, tool_name: str, resource: Optional[str]) -> None:

@@ -447,9 +447,8 @@ else
     $SEED_PYTHON seed_workspaces.py --bucket "$S3_BUCKET" --region "$REGION" 2>/dev/null && \
     success "  Employee workspaces created" || warn "  seed_workspaces.py skipped"
 
-  $SEED_PYTHON seed_ssm_tenants.py \
-    --region "$REGION" --stack "$STACK_NAME" && \
-    success "  SSM tenant→position mappings created"
+  # Note: tenant→position mappings are now in DynamoDB (EMP# records have positionId).
+  # seed_ssm_tenants.py is no longer needed.
 
   # Seed skill catalog to S3
   AWS_REGION="$REGION" S3_BUCKET="$S3_BUCKET" \

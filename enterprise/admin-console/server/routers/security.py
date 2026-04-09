@@ -72,54 +72,33 @@ def put_position_soul(pos_id: str, body: dict, authorization: str = Header(defau
 
 @router.get("/api/v1/security/positions/{pos_id}/tools")
 def get_position_tools(pos_id: str, authorization: str = Header(default="")):
+    """Read tool permissions for a position from DynamoDB POS# record."""
     require_role(authorization, roles=["admin"])
-    try:
-        stack = STACK_NAME
-        ssm = ssm_client()
-        try:
-            resp = ssm.get_parameter(Name=f"/openclaw/{stack}/positions/{pos_id}/tools")
-            return json.loads(resp["Parameter"]["Value"])
-        except Exception:
-            pass
-        emps = db.get_employees()
-        pos_emps = [e for e in emps if e.get("positionId") == pos_id]
-        for emp in pos_emps[:1]:
-            try:
-                p = ssm.get_parameter(Name=f"/openclaw/{stack}/tenants/{emp['id']}/permissions")
-                data = json.loads(p["Parameter"]["Value"])
-                return {"profile": data.get("profile", "basic"), "tools": data.get("tools", [])}
-            except Exception:
-                pass
-        return {"profile": "basic", "tools": ["web_search"]}
-    except Exception as e:
-        return {"profile": "basic", "tools": ["web_search"], "error": str(e)}
+    positions = db.get_positions()
+    pos = next((p for p in positions if p["id"] == pos_id), None)
+    if pos:
+        tools = pos.get("toolAllowlist", ["web_search"])
+        return {"profile": pos_id.replace("pos-", ""), "tools": tools}
+    return {"profile": "basic", "tools": ["web_search"]}
 
 
 @router.put("/api/v1/security/positions/{pos_id}/tools")
 def put_position_tools(pos_id: str, body: dict, authorization: str = Header(default="")):
-    """Write tool permissions for ALL employees in this position."""
+    """Write tool permissions for a position to DynamoDB POS# record."""
     require_role(authorization, roles=["admin"])
-    stack = STACK_NAME
-    ssm = ssm_client()
-    profile = {"profile": body.get("profile", "custom"), "tools": body.get("tools", []),
-               "role": body.get("profile", "custom"),
-               "data_permissions": {"file_paths": [], "api_endpoints": []}}
-    value = json.dumps(profile)
+    tools = body.get("tools", [])
     try:
-        ssm.put_parameter(Name=f"/openclaw/{stack}/positions/{pos_id}/tools",
-                          Value=value, Type="String", Overwrite=True)
+        import boto3 as _b3_sec
+        ddb = _b3_sec.resource("dynamodb", region_name=GATEWAY_REGION)
+        table = ddb.Table(os.environ.get("DYNAMODB_TABLE", "openclaw-enterprise"))
+        table.update_item(
+            Key={"PK": "ORG#acme", "SK": f"POS#{pos_id}"},
+            UpdateExpression="SET toolAllowlist = :tools",
+            ExpressionAttributeValues={":tools": tools},
+        )
     except Exception as e:
         print(f"[security] position tools write failed: {e}")
     emps = db.get_employees()
-    import boto3 as _b3_t
-    for emp in emps:
-        if emp.get("positionId") == pos_id:
-            try:
-                ssm_e1 = _b3_t.client("ssm", region_name=GATEWAY_REGION)
-                ssm_e1.put_parameter(Name=f"/openclaw/{stack}/tenants/{emp['id']}/permissions",
-                                     Value=value, Type="String", Overwrite=True)
-            except Exception as e2:
-                print(f"[security] emp {emp['id']} tools write failed: {e2}")
     return {"saved": True, "propagated": len([e for e in emps if e.get("positionId") == pos_id])}
 
 

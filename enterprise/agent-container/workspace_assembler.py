@@ -43,23 +43,15 @@ def read_s3(s3, bucket: str, key: str) -> str:
 
 
 def get_tenant_position(ssm, stack_name: str, tenant_id: str) -> str:
-    """Get the position ID for a tenant.
+    """Get the position ID for a tenant from DynamoDB.
 
     Resolution order:
-    1. SSM /tenants/{tenant_id}/position  (exact match)
-    2. Strip prefix → base_id, then SSM /tenants/{base_id}/position
-    3. If base_id is not an emp-id, resolve via DynamoDB user-mapping → emp_id,
-       then read positionId from DynamoDB employees table.
-       (Fixes IM channel users: Feishu OU IDs, Discord numeric IDs, etc.)
+    1. Strip prefix → base_id (emp-xxx)
+    2. If base_id is not an emp-id, resolve via DynamoDB MAPPING# → emp_id
+    3. Read positionId from DynamoDB EMP#{emp_id}
     """
-    # Try exact match first
-    try:
-        resp = ssm.get_parameter(
-            Name=f"/openclaw/{stack_name}/tenants/{tenant_id}/position"
-        )
-        return resp["Parameter"]["Value"]
-    except ClientError:
-        pass
+    ddb_region = os.environ.get("DYNAMODB_REGION", "us-east-2")
+    ddb_table = os.environ.get("DYNAMODB_TABLE", "openclaw-enterprise")
 
     # Strip Tenant Router prefix/suffix: <channel>__<user_id>__<hash>
     base_id = tenant_id
@@ -69,34 +61,18 @@ def get_tenant_position(ssm, stack_name: str, tenant_id: str) -> str:
     elif len(parts) == 2:
         base_id = parts[1]
 
-    if base_id != tenant_id:
-        try:
-            resp = ssm.get_parameter(
-                Name=f"/openclaw/{stack_name}/tenants/{base_id}/position"
-            )
-            logger.info("Found position for base tenant %s (from %s)", base_id, tenant_id)
-            return resp["Parameter"]["Value"]
-        except ClientError:
-            pass
+    try:
+        ddb = boto3.resource("dynamodb", region_name=ddb_region)
+        table = ddb.Table(ddb_table)
 
-    # If base_id is not an emp-id, it's a channel user ID (e.g. Feishu OU ID).
-    # Resolve via DynamoDB user-mapping → emp_id → positionId.
-    if not base_id.startswith("emp-"):
-        try:
-            import boto3 as _b3wa
-            ddb_region = os.environ.get("DYNAMODB_REGION", "us-east-2")
-            ddb_table = os.environ.get("DYNAMODB_TABLE", "openclaw-enterprise")
-            ddb = _b3wa.resource("dynamodb", region_name=ddb_region)
-            table = ddb.Table(ddb_table)
-
-            # Find the emp_id via MAPPING# scan
+        # If base_id is not an emp-id, resolve via MAPPING#
+        if not base_id.startswith("emp-"):
             channel_prefix = parts[0] if len(parts) >= 2 else ""
-            emp_id = ""
             resp_ddb = table.get_item(
                 Key={"PK": "ORG#acme", "SK": f"MAPPING#{channel_prefix}__{base_id}"})
             ddb_item = resp_ddb.get("Item")
             if ddb_item:
-                emp_id = ddb_item.get("employeeId", "")
+                base_id = ddb_item.get("employeeId", base_id)
             else:
                 from boto3.dynamodb.conditions import Key as _Key, Attr as _Attr
                 scan = table.query(
@@ -104,26 +80,19 @@ def get_tenant_position(ssm, stack_name: str, tenant_id: str) -> str:
                     FilterExpression=_Attr("channelUserId").eq(base_id),
                 )
                 if scan.get("Items"):
-                    emp_id = scan["Items"][0].get("employeeId", "")
+                    base_id = scan["Items"][0].get("employeeId", base_id)
+            if base_id != parts[1] if len(parts) >= 2 else tenant_id:
+                logger.info("DynamoDB user-mapping resolved %s → %s", parts[1] if len(parts) >= 2 else tenant_id, base_id)
 
-            if emp_id:
-                logger.info("DynamoDB user-mapping resolved %s → %s", base_id, emp_id)
-                # Get positionId from DynamoDB employees table
-                emp_resp = table.get_item(Key={"PK": "ORG#acme", "SK": f"EMP#{emp_id}"})
-                emp_item = emp_resp.get("Item", {})
-                pos_id = emp_item.get("positionId", "")
-                if pos_id:
-                    logger.info("DynamoDB employee position %s → %s", emp_id, pos_id)
-                    return pos_id
-                # Fallback: SSM for the resolved emp_id
-                try:
-                    resp = ssm.get_parameter(
-                        Name=f"/openclaw/{stack_name}/tenants/{emp_id}/position")
-                    return resp["Parameter"]["Value"]
-                except ClientError:
-                    pass
-        except Exception as e:
-            logger.warning("DynamoDB position resolution failed (non-fatal): %s", e)
+        # Read positionId from DynamoDB EMP#
+        emp_resp = table.get_item(Key={"PK": "ORG#acme", "SK": f"EMP#{base_id}"})
+        emp_item = emp_resp.get("Item", {})
+        pos_id = emp_item.get("positionId", "")
+        if pos_id:
+            logger.info("DynamoDB position: %s → %s", base_id, pos_id)
+            return pos_id
+    except Exception as e:
+        logger.warning("DynamoDB position resolution failed (non-fatal): %s", e)
 
     logger.info("No position found for tenant %s (base: %s)", tenant_id, base_id)
     return ""

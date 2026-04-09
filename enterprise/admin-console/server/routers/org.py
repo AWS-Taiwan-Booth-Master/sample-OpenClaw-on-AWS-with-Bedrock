@@ -362,31 +362,7 @@ def _auto_provision_employee(emp: dict) -> dict | None:
         "status": "success",
     })
 
-    try:
-        stack = STACK_NAME
-        ssm = ssm_client()
-        ssm.put_parameter(
-            Name=f"/openclaw/{stack}/tenants/{emp['id']}/position",
-            Value=pos_id, Type="String", Overwrite=True)
-        pos_tools = {
-            "pos-sa": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
-            "pos-sde": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
-            "pos-devops": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
-            "pos-qa": ["web_search", "shell", "file", "code_execution"],
-            "pos-ae": ["web_search", "file", "crm-query", "email-send", "calendar-check"],
-            "pos-pm": ["web_search", "file", "notion-sync", "calendar-check", "excel-gen"],
-            "pos-fa": ["web_search", "file", "excel-gen", "sap-connector"],
-            "pos-hr": ["web_search", "file", "email-send", "calendar-check"],
-            "pos-csm": ["web_search", "file", "crm-query", "email-send"],
-            "pos-legal": ["web_search", "file"],
-            "pos-exec": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
-        }
-        tools = pos_tools.get(pos_id, ["web_search"])
-        ssm.put_parameter(
-            Name=f"/openclaw/{stack}/tenants/{emp['id']}/permissions",
-            Value=json.dumps({"profile": "auto", "tools": tools, "role": pos_id.replace("pos-", "")}),
-            Type="String", Overwrite=True)
-    except Exception as e:
-        print(f"[auto-provision] SSM write failed for {emp['id']}: {e}")
+    # Position and permissions are now read from DynamoDB (EMP#/POS# records).
+    # No SSM writes needed.
 
     return {"agentId": agent_id, "agentName": agent_name}

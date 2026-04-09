@@ -25,9 +25,8 @@ from safety import validate_message
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-# Path to openclaw binary (nvm install on EC2, system install in container)
+# Path to openclaw binary (system install in container, nvm on EC2)
 _OPENCLAW_CANDIDATES = [
-    "/home/ubuntu/.nvm/versions/node/v22.22.1/bin/openclaw",
     "/usr/local/bin/openclaw",
     "/usr/bin/openclaw",
 ]
@@ -536,13 +535,11 @@ def _ensure_workspace_assembled(tenant_id: str) -> None:
             ddb = _b3_model.resource("dynamodb", region_name=DYNAMODB_REGION)
             table = ddb.Table(DYNAMODB_TABLE)
 
-            # Read position for this employee
+            # Read position for this employee from DynamoDB
             pos_id = ""
             try:
-                ssm_client = _b3_model.client("ssm", region_name=AWS_REGION_RUNTIME)
-                pos_resp = ssm_client.get_parameter(
-                    Name=f"/openclaw/{STACK_NAME}/tenants/{base_id}/position")
-                pos_id = pos_resp["Parameter"]["Value"]
+                emp_resp = table.get_item(Key={"PK": "ORG#acme", "SK": f"EMP#{base_id}"})
+                pos_id = emp_resp.get("Item", {}).get("positionId", "")
             except Exception:
                 pass
 
@@ -888,10 +885,11 @@ def _invoke_openclaw_once(tenant_id: str, message: str, timeout: int = 300) -> d
         except IOError:
             pass
 
-    # Ensure node is on PATH for nvm installs
-    nvm_bin = "/home/ubuntu/.nvm/versions/node/v22.22.1/bin"
-    if os.path.isdir(nvm_bin):
-        env["PATH"] = nvm_bin + ":" + env.get("PATH", "")
+    # Ensure node is on PATH for nvm installs (glob to avoid hardcoded version)
+    import glob as _glob
+    nvm_bins = _glob.glob("/home/ubuntu/.nvm/versions/node/*/bin")
+    if nvm_bins:
+        env["PATH"] = nvm_bins[0] + ":" + env.get("PATH", "")
         env["HOME"] = "/home/ubuntu"
 
     openclaw_cmd = [

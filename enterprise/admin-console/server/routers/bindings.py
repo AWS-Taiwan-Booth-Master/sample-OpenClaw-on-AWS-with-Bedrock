@@ -222,16 +222,7 @@ def create_user_mapping(body: UserMappingRequest):
     if emp:
         pos_id = emp.get("positionId", "")
         if pos_id:
-            # Write position for various tenant_id formats the proxy might derive
-            stack = os.environ.get("STACK_NAME", "openclaw-multitenancy")
-            ssm = ssm_client()
-            for tenant_key in [body.employeeId, f"{body.channel}__{body.channelUserId}"]:
-                try:
-                    ssm.put_parameter(
-                        Name=f"/openclaw/{stack}/tenants/{tenant_key}/position",
-                        Value=pos_id, Type="String", Overwrite=True)
-                except Exception:
-                    pass
+            # Position is read from DynamoDB EMP# record — no SSM write needed.
     return {"saved": True, "channel": body.channel, "channelUserId": body.channelUserId, "employeeId": body.employeeId}
 
 
@@ -322,35 +313,8 @@ def approve_pairing(body: PairingApproveRequest, authorization: str = Header(def
         if body.pairingUserId:  # Discord username from pairing message meta
             _write_user_mapping(body.channel, f"dm_{body.pairingUserId}", body.employeeId)
             _write_user_mapping(body.channel, body.pairingUserId, body.employeeId)
-        # Also write position mapping for the numeric user ID (what H2 Proxy extracts)
-        emp = next((e for e in db.get_employees() if e["id"] == body.employeeId), None)
-        if emp and emp.get("positionId"):
-            stack = os.environ.get("STACK_NAME", "openclaw-multitenancy")
-            ssm = ssm_client()
-            try:
-                ssm.put_parameter(
-                    Name=f"/openclaw/{stack}/tenants/{body.channelUserId}/position",
-                    Value=emp["positionId"], Type="String", Overwrite=True)
-                pos_tools = {
-                    "pos-sa": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
-                    "pos-sde": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
-                    "pos-devops": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
-                    "pos-fa": ["web_search", "file", "excel-gen", "sap-connector"],
-                    "pos-pm": ["web_search", "file", "notion-sync", "calendar-check", "excel-gen"],
-                    "pos-ae": ["web_search", "file", "crm-query", "email-send"],
-                    "pos-csm": ["web_search", "file", "crm-query", "email-send"],
-                    "pos-hr": ["web_search", "file", "email-send", "calendar-check"],
-                    "pos-legal": ["web_search", "file"],
-                    "pos-exec": ["web_search", "shell", "browser", "file", "file_write", "code_execution"],
-                }
-                tools = pos_tools.get(emp["positionId"], ["web_search"])
-                ssm.put_parameter(
-                    Name=f"/openclaw/{stack}/tenants/{body.channelUserId}/permissions",
-                    Value=json.dumps({"profile": "auto", "tools": tools, "role": emp["positionId"].replace("pos-", "")}),
-                    Type="String", Overwrite=True)
-                mapping_written = True
-            except Exception:
-                pass
+        # Position and permissions are now read from DynamoDB (EMP#/POS# records).
+        # DynamoDB MAPPING# resolves channelUserId → emp_id → positionId at runtime.
 
     # 3. Sync updated allowFrom list to S3 so microVMs pick it up
     # The EC2's openclaw pairing approve updates the local credentials file.
