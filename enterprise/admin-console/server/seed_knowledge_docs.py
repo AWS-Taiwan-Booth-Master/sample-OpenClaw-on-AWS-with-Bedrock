@@ -20,7 +20,7 @@ DOCS = {
 1. Never store Restricted data in plain text
 2. Encrypt Confidential data at rest and in transit
 3. PII must not appear in logs, chat histories, or AI agent memory files
-4. Customer data must stay within the designated AWS region (us-east-2)
+4. Customer data must stay within the designated AWS region
 5. All data access must be logged and auditable
 
 ## AI Agent Specific

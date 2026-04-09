@@ -6,7 +6,7 @@
 # =============================================================================
 
 # Read stack name from /etc/openclaw/env (set during deploy)
-STACK_NAME="${STACK_NAME:-openclaw-multitenancy}"
+STACK_NAME="${STACK_NAME:-openclaw}"
 SSM_REGION="${SSM_REGION:-${GATEWAY_REGION:-us-east-1}}"
 
 # Source environment file if it exists
