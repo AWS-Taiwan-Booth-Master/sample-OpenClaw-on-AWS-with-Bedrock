@@ -707,6 +707,8 @@ server.on('stream', (stream, headers) => {
           pendingPairings.delete(pendingKey);
           if (result.status === 200 && result.body.success) {
             log(`PATH C: Pairing confirmed ${channel} ${userId} → ${result.body.employeeId}`);
+            // Clear binding cache so next message routes correctly
+            _bindingCache.delete(`${channel}:${userId}`);
             injectResponse(`Connected! You can now chat with your AI Agent here.`);
           } else {
             injectResponse(`Binding failed: ${result.body.detail || 'please try again'}.`);
