@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { MessageSquare, User, BarChart3, Puzzle, FileText, LogOut, Sun, Moon, Link2 } from 'lucide-react';
+import { MessageSquare, User, BarChart3, Puzzle, FileText, LogOut, Sun, Moon, Link2, ArrowLeft } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { api } from '../api/client';
@@ -67,6 +67,19 @@ export default function PortalLayout({ children }: { children: ReactNode }) {
             </button>
           ))}
         </nav>
+
+        {/* Back to Admin (admin/manager only) */}
+        {(user?.role === 'admin' || user?.role === 'manager') && (
+          <div className="px-3 pb-1">
+            <button
+              onClick={() => navigate('/dashboard')}
+              className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-primary-light hover:bg-primary/10 transition-colors"
+            >
+              <ArrowLeft size={16} />
+              Back to Admin Console
+            </button>
+          </div>
+        )}
 
         {/* Theme + User + Logout */}
         <div className="border-t border-dark-border p-3">
