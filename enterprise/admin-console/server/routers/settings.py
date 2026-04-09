@@ -527,6 +527,11 @@ def get_services():
             "itemCount": ddb_item_count,
         },
         "s3": {"status": s3_status, "bucket": s3ops.bucket()},
+        "platform": {
+            "instanceId": GATEWAY_INSTANCE_ID,
+            "region": GATEWAY_REGION,
+            "stackName": STACK_NAME,
+        },
     }
 
 

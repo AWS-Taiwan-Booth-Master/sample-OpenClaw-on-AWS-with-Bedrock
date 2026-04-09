@@ -271,7 +271,7 @@ function ChannelConnections({ channel, connections, channelStatus, onRevoke }: {
             Configure the {label} bot on the gateway EC2 (one-time setup by IT Admin):
           </p>
           <ol className="text-xs text-text-muted space-y-1 list-decimal list-inside">
-            <li>SSM into EC2: <code className="bg-dark-hover px-1 rounded">aws ssm start-session --target $INSTANCE_ID --region $REGION</code></li>
+            <li>SSM into EC2: <code className="bg-dark-hover px-1 rounded">aws ssm start-session --target {instanceId} --region {region}</code></li>
             <li>Switch user: <code className="bg-dark-hover px-1 rounded">sudo su - ubuntu</code></li>
             <li>Add channel: <code className="bg-dark-hover px-1 rounded">openclaw channels add {channel} --token YOUR_BOT_TOKEN</code></li>
             <li>Verify: <code className="bg-dark-hover px-1 rounded">openclaw channels list</code></li>
@@ -363,6 +363,14 @@ export default function IMChannels() {
     refetchInterval: 60_000,
   });
 
+  const { data: servicesData } = useQuery<{ platform?: { instanceId?: string; region?: string } }>({
+    queryKey: ['services'],
+    queryFn: () => api.get('/settings/services'),
+    staleTime: 300_000,
+  });
+  const instanceId = servicesData?.platform?.instanceId || '<INSTANCE_ID>';
+  const region = servicesData?.platform?.region || '<REGION>';
+
   const connections = connectionsData?.connections || {};
   const channelStatusMap = Object.fromEntries(channels.map(c => [c.id, c]));
 
@@ -416,7 +424,7 @@ export default function IMChannels() {
               </div>
               <p className="text-xs text-text-muted">
                 Connect to the gateway EC2 via SSM Session Manager:
-                <code className="bg-dark-hover px-1 rounded block mt-1">aws ssm start-session --target $INSTANCE_ID</code>
+                <code className="bg-dark-hover px-1 rounded block mt-1">aws ssm start-session --target {instanceId} --region {region}</code>
                 Then switch to ubuntu user: <code className="bg-dark-hover px-1 rounded">sudo su - ubuntu</code>
               </p>
             </div>
