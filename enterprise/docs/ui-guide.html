@@ -100,14 +100,50 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
 </div>
 <script>
 let lang='en',role='admin',step=0;
-const T={en:{t:'OpenClaw Enterprise — UI Guide',d:'Step-by-step walkthrough for IT Administrators and Employees',admin:'IT Admin (15 steps)',emp:'Employee (6 steps)',prev:'← Previous',next:'Next →'},
-zh:{t:'OpenClaw Enterprise — 使用指南',d:'IT 管理员和员工的分步操作指南',admin:'IT 管理员 (15步)',emp:'员工 (6步)',prev:'← 上一步',next:'下一步 →'}};
+const T={en:{t:'OpenClaw Enterprise — Platform Guide',d:'Architecture, deployment, and step-by-step operations for IT Admins and Employees',admin:'IT Admin (19 steps)',emp:'Employee (6 steps)',prev:'← Previous',next:'Next →'},
+zh:{t:'OpenClaw Enterprise — 平台指南',d:'面向 IT 管理员和员工的架构、部署和分步操作指南',admin:'IT 管理员 (19步)',emp:'员工 (6步)',prev:'← 上一步',next:'下一步 →'}};
 
 function wb(eW,cW,eC,cC){return `<div class="wb" onclick="this.classList.toggle('c')"><div class="wh">💡 ${lang==='en'?'Why This Matters / 设计逻辑':'设计逻辑 / Why This Matters'}</div><div class="wc">${lang==='en'?eC:cC}</div></div>`;}
 function an(icon,cls,e,c){return `<div class="an ${cls}"><span class="ai">${icon}</span><div class="at">${lang==='en'?e:c}</div></div>`;}
 function mk(hdr,body){return `<div class="mk"><div class="mh">${hdr}</div><div class="mb">${body}</div></div>`;}
 
 const S={admin:[
+{id:'arch',en:'Architecture Overview',zh:'架构总览',de:'Understand how all components connect — from IM to AgentCore.',dz:'了解所有组件如何连接 — 从 IM 到 AgentCore。',
+h(){return wb('','',
+'Understanding the architecture is key to effective management. OpenClaw Enterprise has a <strong>multi-layer routing pipeline</strong> that ensures each employee gets their own isolated AI agent with the right identity, knowledge, and permissions — even when thousands of employees share a single EC2 gateway.',
+'理解架构是有效管理的关键。OpenClaw 企业版有一个<strong>多层路由管道</strong>，确保每个员工都获得自己隔离的 AI Agent，拥有正确的身份、知识和权限 — 即使数千名员工共享单个 EC2 网关。'
+)+`<div class="mk"><div class="mh">Enterprise Architecture — Data Flow</div><div class="mb"><div style="font-family:monospace;font-size:11px;line-height:1.8;color:var(--ts)">
+<div style="text-align:center;margin-bottom:8px;font-weight:600;color:var(--text)">Employee IM Message → AI Agent Response</div>
+<div class="ch" style="justify-content:center;flex-wrap:wrap"><span class="cn">Feishu/TG/Discord</span><span class="ca">→</span><span class="cn p">EC2 Gateway<br><span style="font-size:8px">port 18789</span></span><span class="ca">→</span><span class="cn c">H2 Proxy<br><span style="font-size:8px">port 8091</span></span><span class="ca">→</span><span class="cn s">Tenant Router<br><span style="font-size:8px">port 8090</span></span><span class="ca">→</span><span class="cn" style="background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.3);color:#f87171">AgentCore<br><span style="font-size:8px">Firecracker VM</span></span><span class="ca">→</span><span class="cn">Bedrock</span></div>
+<div class="sep"></div>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:10px">
+<div><strong style="color:var(--pl)">Gateway</strong> — ${lang==='en'?'Receives IM webhooks, manages bot connections':'接收 IM webhook，管理 bot 连接'}</div>
+<div><strong style="color:var(--cyan)">H2 Proxy</strong> — ${lang==='en'?'Intercepts Bedrock calls, handles pairing, routes to Tenant Router':'拦截 Bedrock 调用，处理配对，路由到 Tenant Router'}</div>
+<div><strong style="color:var(--success)">Tenant Router</strong> — ${lang==='en'?'Resolves employee identity, selects AgentCore runtime':'解析员工身份，选择 AgentCore 运行时'}</div>
+<div><strong style="color:#f87171">AgentCore</strong> — ${lang==='en'?'Isolated Firecracker microVM per employee, full OpenClaw instance':'每员工独立 Firecracker 微虚拟机，完整 OpenClaw 实例'}</div>
+</div></div></div>`
++`<div style="margin-top:12px"><div style="font-size:12px;font-weight:600;margin-bottom:6px">${lang==='en'?'SOUL 3-Layer Inheritance Model:':'SOUL 三层继承模型：'}</div><div class="ch"><span class="cn" style="background:rgba(239,68,68,.08);border-color:rgba(239,68,68,.2);color:#f87171">🔒 Global<br><span style="font-size:8px">${lang==='en'?'Company rules':'公司规则'}</span></span><span class="ca">→</span><span class="cn p">✏️ Position<br><span style="font-size:8px">${lang==='en'?'Role expertise':'角色专长'}</span></span><span class="ca">→</span><span class="cn s">✏️ Personal<br><span style="font-size:8px">${lang==='en'?'Preferences':'个人偏好'}</span></span><span class="ca">=</span><span class="cn c">Merged SOUL<br><span style="font-size:8px">${lang==='en'?'What agent reads':'Agent 读取内容'}</span></span></div><div style="font-size:10px;color:var(--tm);margin-top:4px">${lang==='en'?'Global is locked by IT. Position is managed by department. Personal is editable by employee.':'全局由 IT 锁定。岗位由部门管理。个人由员工自行编辑。'}</div></div>`
++an('📊','i',lang==='en'?'<strong>Key design principle:</strong> Each employee gets an isolated Firecracker microVM. The SOUL, knowledge base, and memory are assembled from S3/DynamoDB at session start. Even if 1000 employees use the same bot, each gets their own agent personality.':'<strong>关键设计原则：</strong>每个员工获得独立的 Firecracker 微虚拟机。SOUL、知识库和记忆在会话开始时从 S3/DynamoDB 组装。即使 1000 名员工使用同一个 bot，每个人都有自己的 Agent 个性。','')}},
+
+{id:'deploy',en:'Deploy with deploy.sh',zh:'使用 deploy.sh 部署',de:'One-command deployment — infrastructure, Docker, seed data, services.',dz:'一键部署 — 基础设施、Docker、种子数据、服务。',
+h(){return wb('','',
+'The deployment script automates all 8 steps: CloudFormation infrastructure, Docker image build on EC2, AgentCore runtime creation, S3 template upload, DynamoDB seeding, secret management, and service installation. A fresh deployment takes ~15 minutes.',
+'部署脚本自动化所有 8 个步骤：CloudFormation 基础设施、EC2 上 Docker 镜像构建、AgentCore 运行时创建、S3 模板上传、DynamoDB 数据种子、密钥管理和服务安装。全新部署约需 15 分钟。'
+)+an('💻','c',
+`<strong>${lang==='en'?'Prerequisites:':'前置条件：'}</strong><br>• AWS CLI v2.27+ &nbsp; • AWS account with Bedrock access &nbsp; • Bash shell<div class="cb">cd enterprise\ncp .env.example .env\n# Edit .env: set STACK_NAME, REGION, ADMIN_PASSWORD\nbash deploy.sh</div>`,
+`<strong>前置条件：</strong><br>• AWS CLI v2.27+ &nbsp; • 有 Bedrock 访问权限的 AWS 账号 &nbsp; • Bash shell<div class="cb">cd enterprise\ncp .env.example .env\n# 编辑 .env：设置 STACK_NAME, REGION, ADMIN_PASSWORD\nbash deploy.sh</div>`
+)+mk(lang==='en'?'deploy.sh — 8 Automated Steps':'deploy.sh — 8 个自动化步骤',`<div style="display:flex;flex-direction:column;gap:4px">${[
+['1','Prerequisites','AWS CLI, Bedrock model check','2s'],
+['2','CloudFormation','VPC, EC2, ECR, S3, IAM, ECS, EFS','8 min'],
+['3','Docker Build','Build agent container on EC2 → push to ECR','10 min'],
+['4','AgentCore Runtime','Create runtime with env vars','30s'],
+['5','S3 Templates','Upload SOUL, skills, knowledge docs','10s'],
+['6','DynamoDB Seed','Employees, agents, bindings, settings, roles','15s'],
+['7','Secrets + Env','SSM secrets, /etc/openclaw/env on EC2','10s'],
+['8','EC2 Services','Build admin console, install systemd services','2 min'],
+].map(([n,name,desc,time])=>`<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:6px;background:var(--bg);font-size:11px"><span style="background:var(--primary);color:#fff;font-size:9px;font-weight:700;width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex-shrink:0">${n}</span><span style="font-weight:500;min-width:120px">${name}</span><span style="color:var(--tm);flex:1">${desc}</span><span style="color:var(--success);font-size:10px">${time}</span></div>`).join('')}</div>`
+)+an('⚠️','w',lang==='en'?'<strong>.env key parameters:</strong><br>• <code>STACK_NAME</code> — names all resources (must be unique per account/region)<br>• <code>REGION</code> — AWS region (must have Bedrock + AgentCore)<br>• <code>ADMIN_PASSWORD</code> — login password for all demo accounts<br>• <code>WORKSPACE_BUCKET_NAME</code> — set if deploying multiple stacks in same account':'<strong>.env 关键参数：</strong><br>• <code>STACK_NAME</code> — 所有资源的名称（每个账号/区域必须唯一）<br>• <code>REGION</code> — AWS 区域（必须有 Bedrock + AgentCore）<br>• <code>ADMIN_PASSWORD</code> — 所有演示账号的登录密码<br>• <code>WORKSPACE_BUCKET_NAME</code> — 同账号多 stack 时设置','')}},
+
 {id:'login',en:'Access the Admin Console',zh:'登录管理控制台',de:'Connect via SSM port forwarding and sign in.',dz:'通过 SSM 端口转发连接并登录。',
 h(){return wb('','',
 'The Admin Console runs behind SSM Session Manager — there is no public URL exposed to the internet. This is a deliberate security design: think of SSM as a VPN tunnel that <strong>only authorized AWS IAM users</strong> can open. Even if someone discovers the EC2 IP, they cannot access the console without IAM credentials.',
@@ -217,6 +253,26 @@ h(){return wb('','',
 '没有监控就是<strong>盲飞</strong> — 您不会知道 Agent 是否卡住、过载或给出错误答案，直到有人投诉。实时会话显示谁在对话。运行时事件显示容器生命周期（空闲容器仍产生费用）。告警规则让您设置阈值 — <strong>在用户之前发现问题</strong>。'
 )+an('📍','i',`<strong>${lang==='en'?'Navigate to:':'导航到：'}</strong> Monitor`,'<strong>导航到：</strong> Monitor'
 )+mk(lang==='en'?'Monitor':'监控',`<div class="sg"><div class="ss"><div class="v" style="color:var(--success)">3</div><div class="l">${lang==='en'?'Active Sessions':'活跃会话'}</div></div><div class="ss"><div class="v">8</div><div class="l">${lang==='en'?'Online Agents':'在线 Agent'}</div></div><div class="ss"><div class="v">142</div><div class="l">${lang==='en'?'Turns Today':'今日轮次'}</div></div><div class="ss"><div class="v">⭐4.2</div><div class="l">${lang==='en'?'Avg Quality':'平均质量'}</div></div></div><table class="mt"><tr><th>Agent</th><th>Employee</th><th>Channel</th><th>Turns</th><th>Status</th></tr><tr><td>carol-fa</td><td>Carol Zhang</td><td>Slack</td><td>12</td><td><span class="bg gn">Active</span></td></tr><tr><td>ryan-sde</td><td>Ryan Park</td><td>Discord</td><td>8</td><td><span class="bg gn">Active</span></td></tr><tr><td>dickson-exec</td><td>Dickson Lee</td><td>Telegram</td><td>23</td><td><span class="bg gn">Active</span></td></tr></table>`)}},
+
+{id:'settings',en:'Settings — Model & Agent Config',zh:'设置 — 模型与 Agent 配置',de:'Configure default models, position overrides, compaction, and system health.',dz:'配置默认模型、岗位覆盖、内存压缩和系统健康。',
+h(){return wb('','',
+'Settings controls the <strong>brain and behavior</strong> of all agents. The model hierarchy lets you assign expensive models (Claude Opus) to executives while keeping costs low for others (Nova Lite). Agent config controls memory compaction (how much history agents remember) and language preferences.',
+'设置控制所有 Agent 的<strong>大脑和行为</strong>。模型层级允许为高管分配昂贵模型（Claude Opus），同时其他人使用低成本模型（Nova Lite）。Agent 配置控制记忆压缩（Agent 记住多少历史）和语言偏好。'
+)+an('📍','i',`<strong>${lang==='en'?'Navigate to:':'导航到：'}</strong> Settings → Account / Interface / Admin Assistant / System`,'<strong>导航到：</strong> Settings → Account / Interface / Admin Assistant / System'
+)+mk(lang==='en'?'Model Configuration':'模型配置',`<table class="mt"><tr><th>${lang==='en'?'Scope':'范围'}</th><th>${lang==='en'?'Model':'模型'}</th><th>${lang==='en'?'Cost':'成本'}</th><th>${lang==='en'?'Use Case':'使用场景'}</th></tr><tr><td><span class="bg gn">Default</span></td><td>Nova 2 Lite</td><td>$0.30/1M</td><td>${lang==='en'?'All employees':'所有员工'}</td></tr><tr><td><span class="bg yl">Fallback</span></td><td>Nova Pro</td><td>$0.80/1M</td><td>${lang==='en'?'When default fails':'默认模型失败时'}</td></tr><tr><td><span class="bg bl">pos-exec</span></td><td>Claude Sonnet 4.6</td><td>$3.00/1M</td><td>${lang==='en'?'Executive tier':'高管层级'}</td></tr><tr><td><span class="bg bl">pos-sa</span></td><td>Claude Sonnet 4.5</td><td>$3.00/1M</td><td>${lang==='en'?'Architecture reviews':'架构评审'}</td></tr></table>`)}},
+
+{id:'troubleshoot',en:'Troubleshooting',zh:'故障排除',de:'Common issues and how to diagnose them.',dz:'常见问题及诊断方法。',
+h(){return wb('','',
+'Most issues fall into three categories: <strong>service not running</strong> (check systemctl), <strong>data not loading</strong> (check DynamoDB/S3), and <strong>routing broken</strong> (check H2 Proxy logs). The diagnostic commands below cover 90% of issues.',
+'大多数问题归为三类：<strong>服务未运行</strong>（检查 systemctl）、<strong>数据未加载</strong>（检查 DynamoDB/S3）、<strong>路由中断</strong>（检查 H2 Proxy 日志）。以下诊断命令覆盖 90% 的问题。'
+)+`<div class="an c"><span class="ai">🔧</span><div class="at"><strong>${lang==='en'?'Quick Diagnostics (SSM into EC2):':'快速诊断（SSM 进入 EC2）：'}</strong><div class="cb"># All services running?\nsystemctl is-active openclaw-admin tenant-router bedrock-proxy-h2\nsudo -H -u ubuntu XDG_RUNTIME_DIR=/run/user/1000 systemctl --user is-active openclaw-gateway\n\n# All ports listening?\nss -tlnp | grep -E '8090|8091|8099|18789'\n\n# H2 Proxy receiving requests?\njournalctl -u bedrock-proxy-h2 --no-pager -n 20\n\n# Tenant Router routing correctly?\njournalctl -u tenant-router --no-pager -n 20\n\n# DynamoDB accessible?\ncurl -s http://localhost:8099/api/v1/org/employees | python3 -c "import json,sys; print(f'Employees: {len(json.load(sys.stdin))}')"</div></div></div>`
++mk(lang==='en'?'Common Issues':'常见问题',`<table class="mt"><tr><th>${lang==='en'?'Symptom':'症状'}</th><th>${lang==='en'?'Cause':'原因'}</th><th>${lang==='en'?'Fix':'修复'}</th></tr>
+<tr><td>${lang==='en'?'Agent says "I am an AI assistant" (no identity)':'Agent 说"我是 AI 助手"（无身份）'}</td><td>${lang==='en'?'SOUL not loaded — Docker image outdated':'SOUL 未加载 — Docker 镜像过期'}</td><td><code>deploy.sh --skip-seed</code></td></tr>
+<tr><td>${lang==='en'?'IM: "not linked to employee"':'IM："未绑定员工"'}</td><td>${lang==='en'?'No MAPPING# in DynamoDB':'DynamoDB 无 MAPPING#'}</td><td>${lang==='en'?'Portal → Connect IM → pair':'Portal → Connect IM → 配对'}</td></tr>
+<tr><td>${lang==='en'?'IM: /start not recognized':'IM：/start 无法识别'}</td><td>${lang==='en'?'H2 Proxy not running':'H2 Proxy 未运行'}</td><td><code>systemctl restart bedrock-proxy-h2</code></td></tr>
+<tr><td>${lang==='en'?'Monitor shows 0 sessions':'Monitor 显示 0 会话'}</td><td>${lang==='en'?'AgentCore role lacks DynamoDB IAM':'AgentCore 角色缺少 DynamoDB IAM'}</td><td>${lang==='en'?'Update CFN stack':'更新 CFN stack'}</td></tr>
+<tr><td>${lang==='en'?'Login fails':'登录失败'}</td><td>${lang==='en'?'JWT secret mismatch':'JWT 密钥不匹配'}</td><td><code>systemctl restart openclaw-admin</code></td></tr>
+</table>`)}},
 ],
 emp:[
 {id:'el',en:'Login to Employee Portal',zh:'登录员工门户',de:'Employees see a simplified interface — just your personal AI assistant.',dz:'员工看到的是简化界面 — 只有个人 AI 助手。',
