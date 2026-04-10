@@ -28,7 +28,21 @@ module "eks_cluster" {
   core_instance_types = local.core_instance_types
   core_node_count     = var.core_node_count
 
-  access_entries      = var.access_entries
+  # Merge user-provided access entries with the Terraform caller (e.g. CodeBuild role)
+  # This ensures the caller can deploy K8s resources (Helm, namespaces, etc.) after cluster creation
+  access_entries = merge(var.access_entries, {
+    terraform_caller = {
+      principal_arn = data.aws_iam_session_context.current.issuer_arn
+      policy_associations = {
+        admin = {
+          policy_arn = "arn:${local.partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          access_scope = {
+            type = "cluster"
+          }
+        }
+      }
+    }
+  })
   kms_key_admin_roles = var.kms_key_admin_roles
 
   is_china_region = local.is_china_region
