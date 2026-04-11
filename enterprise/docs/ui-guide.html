@@ -644,6 +644,46 @@ Allowed tools: web_search, file. MUST NOT: shell, browser...
 </ul>`
     ); }},
 
+dashboard: {
+  en: { title:'Dashboard', sub:'Command center — setup checklist, real-time stats, quick actions.' },
+  zh: { title:'仪表盘', sub:'指挥中心 — 配置清单、实时统计、快捷操作。' },
+  body() {
+    return intent(
+      t(
+        '<strong>Why a setup checklist?</strong> First-time admins face a blank platform with 15+ sidebar items. The checklist provides a <strong>clear 5-step roadmap</strong>: deploy → seed data → configure SOUL → set up IM → test in Playground. Each item links to the page needed. Experienced admins see <strong>real-time stat cards</strong>: employee count, active sessions, quality score. One screen to know if everything is OK.',
+        '<strong>为什么有配置清单？</strong>首次管理员面对空白平台。清单提供<strong>清晰的 5 步路线图</strong>。有经验管理员看到<strong>实时统计卡片</strong>。一个屏幕知道一切是否正常。'
+      )
+    )
+    + note('info','📍',t(
+      '<strong>Navigate:</strong> Sidebar → Dashboard. Shows: setup checklist (5 steps), stat cards, agent health grid, conversation trend chart, pending approvals.',
+      '<strong>导航：</strong>侧边栏 → Dashboard。显示：配置清单（5 步）、统计卡片、Agent 健康网格、对话趋势图、待审批。'
+    ))
+    + deep(
+      '<h4>Data Sources</h4><p>11 API endpoints queried in parallel via React Query: departments, positions, employees, agents, sessions, audit, bindings, usage summary, trend, approvals, alerts. All from DynamoDB single-table.</p><h4>Setup Checklist</h4><div class="code">setupDone = { departments: count>0, positions: count>0, employees: count>0,\n              agents: count>0, channels: configured>0 }\n// All 5 must be >0 to dismiss</div><h4>⚠️ Self-Audit</h4><ul style="font-size:12px;color:var(--text-s);line-height:1.8"><li><strong>Checklist checks count>0, not quality:</strong> 1 empty department = "done". Could validate nested completeness.</li><li><strong>Quality scores are seeded defaults until real sessions accumulate.</strong></li></ul>',
+      '<h4>数据来源</h4><p>通过 React Query 并行查询 11 个 API 端点。全部从 DynamoDB 单表读取。</p><h4>配置清单</h4><div class="code">setupDone = { departments: >0, positions: >0, employees: >0,\n              agents: >0, channels: >0 }\n// 全部 5 项 >0 才关闭</div><h4>⚠️ 自审</h4><ul style="font-size:12px;color:var(--text-s);line-height:1.8"><li><strong>清单只检查数量>0：</strong>1 个空部门也标记完成。</li><li><strong>质量分在真实会话前是种子默认值。</strong></li></ul>'
+    );
+  }
+},
+
+org: { en:{title:'Organization Management',sub:'Departments → Positions → Employees: govern 500 agents with 10 config changes.'}, zh:{title:'组织架构管理',sub:'部门 → 岗位 → 员工：用 10 次配置变更治理 500 个 Agent。'}, body(){ return intent(
+      t(
+        '<strong>Why mirror the org chart?</strong> Without structure, you manage 500 individual agents. With 3 levels: <strong>Departments</strong> = isolation boundaries. <strong>Positions</strong> = Agent DNA (one config per role, inherited by all agents). <strong>Employees</strong> = auto-provisioned. 5 departments × 10 positions = manage 500 agents. <strong>Security:</strong> managers only see their department. <strong>Operations:</strong> onboard 50 new hires by assigning positions — zero manual config.',
+        '<strong>为什么镜像组织架构？</strong>没有结构要管理 500 个独立 Agent。有了三级：<strong>部门</strong> = 隔离边界。<strong>岗位</strong> = Agent DNA（每角色一个配置，所有 Agent 继承）。<strong>员工</strong> = 自动配置。5 部门 × 10 岗位 = 管理 500 Agent。<strong>安全：</strong>经理只看自己部门。<strong>运维：</strong>分配岗位即入职——零手动配置。'
+      )
+    )
+    + sectionHead(t('Departments','部门'))
+    + note('info','📍',t('<strong>Organization → Departments.</strong> Hierarchy tree. Sub-departments supported. Managers see only their scope.','<strong>Organization → Departments。</strong>层级树。支持子部门。经理只看自己范围。'))
+    + sectionHead(t('Positions — Agent DNA','岗位 — Agent DNA'))
+    + steps(t('Operations:','操作：'),t(['Organization → Positions. Each shows member count + SOUL status.','Click position → SOUL tab → write role behavior (Layer 2 in merge).','Skills & Tools tab → tool allowlist (stored in POS#.toolAllowlist).','Positions with "Empty" SOUL need urgent attention.'],['Organization → Positions。显示成员数 + SOUL 状态。','点击岗位 → SOUL 标签 → 编写角色行为（合并中的第 2 层）。','Skills & Tools 标签 → 工具白名单（存储在 POS#.toolAllowlist）。','标记"Empty"SOUL 的岗位需要紧急配置。']))
+    + sectionHead(t('Employees — Auto-Provisioning','员工 — 自动配置'))
+    + steps(t('Operations:','操作：'),t(['Organization → Employees. All with position, channels, status.','Add Employee → select position → auto-provisioned (Serverless).','Creates: AGENT# + BIND# (1:1) + S3 workspace (IDENTITY, MEMORY, USER.md).','Click employee → edit personal SOUL, view IM channels.'],['Organization → Employees。含岗位、通道、状态。','添加员工 → 选择岗位 → 自动配置（Serverless）。','创建：AGENT# + BIND#（1:1）+ S3 工作区。','点击员工 → 编辑个人 SOUL，查看 IM 通道。']))
+    + deep(
+      '<h4>DynamoDB Schema</h4><div class="code">DEPT#{dept_id} — name, parentId, headCount\nPOS#{pos_id}  — name, departmentId, toolAllowlist[], defaultSkills[]\nEMP#{emp_id}  — name, positionId, agentId, channels[], agentStatus</div><h4>Auto-Provisioning (org.py → _auto_provision_employee)</h4><div class="code">1. Create AGENT# (active, serverless)\n2. Create BIND# (1:1, primary channel)\n3. Seed S3: {emp_id}/workspace/IDENTITY.md, MEMORY.md, USER.md\n4. Update EMP# with agentId\n5. Create AUDIT# entry</div><h4>⚠️ Self-Audit</h4><ul style="font-size:12px;color:var(--text-s);line-height:1.8"><li><strong>Position change = global cache evict:</strong> Changing one position clears ALL agents cache. Scaling concern at 1000+.</li><li><strong>No unassigned employee state:</strong> Must select position to add employee (by design).</li><li><strong>Department isolation is UI-level, not API-level:</strong> API returns all data. Direct API calls bypass department scoping. For strict isolation, implement row-level security.</li></ul>',
+      '<h4>DynamoDB 表结构</h4><div class="code">DEPT#{dept_id} — name, parentId, headCount\nPOS#{pos_id}  — name, departmentId, toolAllowlist[], defaultSkills[]\nEMP#{emp_id}  — name, positionId, agentId, channels[]</div><h4>自动配置（org.py → _auto_provision_employee）</h4><div class="code">1. 创建 AGENT#\n2. 创建 BIND#（1:1）\n3. 种子 S3 工作区\n4. 更新 EMP# agentId\n5. 创建 AUDIT# 条目</div><h4>⚠️ 自审</h4><ul style="font-size:12px;color:var(--text-s);line-height:1.8"><li><strong>岗位变更 = 全局缓存清除</strong></li><li><strong>部门隔离在 UI 层非 API 层</strong></li></ul>'
+    ); }},
+
+
+
 agents: { en:{title:'Agent Factory',sub:'Fleet management — status, models, quality, deploy mode.'}, zh:{title:'Agent 工厂',sub:'车队管理 — 状态、模型、质量、部署模式。'}, body(){ return intent('Like a <strong>car dealership inventory</strong>: every agent\'s status, model, quality score, deployment mode. Set Bedrock models per position — <strong>executives use Claude Opus, interns use Nova Lite</strong>.','像<strong>汽车库存系统</strong>：每个 Agent 的状态、模型、质量分、部署模式。按岗位设置模型 — <strong>高管用 Claude Opus，实习生用 Nova Lite</strong>。') + note('info','📍',t('<strong>Navigate:</strong> Agent Factory. 20 agents with sortable columns. Click → SOUL editor, session history, skill list.','<strong>导航：</strong>Agent Factory。20 个 Agent，可排序。点击 → SOUL 编辑器、会话历史、技能列表。'))
     + deep(`
 <h4>DynamoDB AGENT# Schema</h4>
