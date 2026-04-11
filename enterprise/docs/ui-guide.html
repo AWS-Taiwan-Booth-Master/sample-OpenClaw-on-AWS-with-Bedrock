@@ -304,8 +304,8 @@ arch: {
   zh: { title:'架构总览', sub:'将每条消息路由到正确 Agent 的多层管道。' },
   body() {
     return intent(
-      'OpenClaw Enterprise uses a <strong>shared gateway + isolated microVM</strong> architecture. All employees share one EC2 instance for receiving messages, but each gets their own Firecracker microVM in AgentCore — with their own SOUL, memory, and permissions. Cost efficiency of shared infra, security of complete isolation.',
-      'OpenClaw 企业版采用<strong>共享网关 + 隔离微虚拟机</strong>架构。所有员工共享一个 EC2 实例接收消息，但每个人在 AgentCore 中拥有自己的 Firecracker 微虚拟机 — 拥有自己的 SOUL、记忆和权限。兼顾共享成本效率和完全隔离安全性。'
+      '<strong>Why this architecture?</strong> Enterprise AI agents face a fundamental tension: you want the <strong>cost efficiency</strong> of shared infrastructure (one EC2 for 1000 employees) but the <strong>security guarantee</strong> that Employee A\'s conversations, tools, and knowledge base are completely invisible to Employee B. Our solution: a shared gateway receives all messages, but each employee\'s AI processing happens inside an <strong>isolated Firecracker microVM</strong> — the same technology AWS Lambda uses. This means: (1) No data leakage between employees, even if an agent is compromised. (2) Per-employee tool permissions enforced at the VM level. (3) Cost proportional to actual usage, not headcount — with their own SOUL, memory, and permissions. Cost efficiency of shared infra, security of complete isolation.',
+      '<strong>为什么选择这种架构？</strong>企业 AI Agent 面临根本矛盾：您希望共享基础设施的<strong>成本效率</strong>（一台 EC2 服务 1000 名员工），但又需要<strong>安全保证</strong>——A 员工的对话、工具和知识库对 B 员工完全不可见。我们的方案：共享网关接收所有消息，但每个员工的 AI 处理发生在<strong>隔离的 Firecracker 微虚拟机</strong>中——与 AWS Lambda 相同的技术。(1) 员工间零数据泄露。(2) VM 级别工具权限强制执行。(3) 成本与实际使用成正比 — 拥有自己的 SOUL、记忆和权限。兼顾共享成本效率和完全隔离安全性。'
     )
     + sectionHead(t('Complete Data Flow','完整数据流'))
     + card(t('Message Journey: IM → AI Response','消息旅程：IM → AI 响应'),
@@ -344,8 +344,8 @@ deploy: {
   zh: { title:'使用 deploy.sh 部署', sub:'一键部署 — 基础设施、Docker、数据、服务。' },
   body() {
     return intent(
-      'A single <code>bash deploy.sh</code> handles everything: CloudFormation infrastructure, Docker image build on EC2, AgentCore runtime creation, data seeding, and service installation. <strong>No manual steps. ~15 minutes for a fresh deployment.</strong>',
-      '一条 <code>bash deploy.sh</code> 搞定所有：CloudFormation 基础设施、EC2 上 Docker 镜像构建、AgentCore 运行时创建、数据种子和服务安装。<strong>无需手动步骤。全新部署约 15 分钟。</strong>'
+      '<strong>Why one-command deployment?</strong> Enterprise customers need repeatability and auditability. Every deployment must produce identical results whether run by a senior engineer or a junior ops person. <code>deploy.sh</code> encapsulates 8 complex AWS operations into a single idempotent script — CloudFormation for infrastructure, Docker for agent runtime, DynamoDB for org data, SSM for secrets. <strong>No manual steps, no room for human error, ~15 minutes end-to-end.</strong> Re-running is safe: it detects existing resources and updates only what changed.',
+      '<strong>为什么一键部署？</strong>企业客户需要可重复性和可审计性。每次部署必须产生相同结果，无论是高级工程师还是初级运维操作。<code>deploy.sh</code> 将 8 个复杂 AWS 操作封装为一个幂等脚本——CloudFormation 基础设施、Docker Agent 运行时、DynamoDB 组织数据、SSM 密钥。<strong>无手动步骤，无人为错误空间，端到端约 15 分钟。</strong>重复运行安全：检测已有资源，只更新变化的部分。'
     )
     + sectionHead(t('Prerequisites','前置条件'))
     + `<table class="tbl"><tr><th>${t('Requirement','要求')}</th><th>${t('Check','检查')}</th><th>${t('Min Version','最低版本')}</th></tr>`
@@ -380,8 +380,8 @@ login: {
   zh: { title:'登录管理控制台', sub:'SSM 端口转发 → 浏览器 → 登录。' },
   body() {
     return intent(
-      'The Admin Console has <strong>no public URL</strong> — it runs behind AWS SSM Session Manager. SSM is a VPN tunnel that only authorized IAM users can open. Even if someone discovers the EC2 IP, they cannot access without IAM credentials. <strong>Zero-trust by design.</strong>',
-      '管理控制台<strong>没有公网 URL</strong> — 运行在 AWS SSM Session Manager 之后。SSM 是只有授权 IAM 用户才能打开的 VPN 隧道。即使发现 EC2 IP，没有 IAM 凭证也无法访问。<strong>零信任设计。</strong>'
+      '<strong>Why no public URL?</strong> The Admin Console manages your entire AI workforce — agent identities, tool permissions, employee data. Exposing it to the internet would be a critical security risk. Instead, it runs behind AWS SSM Session Manager — a <strong>zero-trust access model</strong> where every connection requires IAM authentication. The Admin Console has <strong>no public URL</strong> — it runs behind AWS SSM Session Manager. SSM is a VPN tunnel that only authorized IAM users can open. Even if someone discovers the EC2 IP, they cannot access without IAM credentials. <strong>Zero-trust by design.</strong>',
+      '<strong>为什么没有公网 URL？</strong>管理控制台管理整个 AI 员工队伍——Agent 身份、工具权限、员工数据。暴露到互联网是关键安全风险。因此运行在 AWS SSM Session Manager 之后——<strong>零信任访问模型</strong>，每次连接都需要 IAM 认证。管理控制台<strong>没有公网 URL</strong> — 运行在 AWS SSM Session Manager 之后。SSM 是只有授权 IAM 用户才能打开的 VPN 隧道。即使发现 EC2 IP，没有 IAM 凭证也无法访问。<strong>零信任设计。</strong>'
     )
     + sectionHead(t('Connect','连接'))
     + `<div class="code">aws ssm start-session --target &lt;INSTANCE_ID&gt; --region &lt;REGION&gt; \\\n  --document-name AWS-StartPortForwardingSession \\\n  --parameters 'portNumber=8099,localPortNumber=8099'</div>`
@@ -392,7 +392,98 @@ login: {
   }
 },
 
-dashboard: { en:{title:'Dashboard',sub:'Command center — setup checklist, stats, quick actions.'}, zh:{title:'仪表盘',sub:'指挥中心 — 配置清单、统计、快捷操作。'}, body(){ return intent('The dashboard gives first-time admins a <strong>clear roadmap</strong> via the setup checklist, and experienced admins a <strong>real-time pulse</strong> via stat cards. One screen to know if everything is OK.','仪表盘通过设置清单给首次管理员<strong>清晰路线图</strong>，通过统计卡片给有经验管理员<strong>实时脉搏</strong>。一个屏幕知道一切是否正常。') + note('info','📍',t('<strong>Navigate:</strong> Sidebar → Dashboard. Shows: setup progress, employee/agent/session counts, system health indicators.','<strong>导航：</strong>侧边栏 → Dashboard。显示：设置进度、员工/Agent/会话数、系统健康指标。')); }},
+dashboard: { en:{title:'Dashboard',sub:'Command center — setup checklist, stats, quick actions.'}, zh:{title:'仪表盘',sub:'指挥中心 — 配置清单、统计、快捷操作。'}, body(){ return intent('The dashboard gives first-time admins a <strong>clear roadmap</strong> via the setup checklist, and experienced admins a <strong>real-time pulse</strong> via stat cards. One screen to know if everything is OK.','仪表盘通过设置清单给首次管理员<strong>清晰路线图</strong>，通过统计卡片给有经验管理员<strong>实时脉搏</strong>。一个屏幕知道一切是否正常。') + note('info','📍',t('<strong>Navigate:</strong> Sidebar → Dashboard. Shows: setup progress, employee/agent/session counts, system health indicators.','<strong>导航：</strong>侧边栏 → Dashboard。显示：设置进度、员工/Agent/会话数、系统健康指标。'))
+    + deep(`
+<h4>deploy.sh Internal Architecture</h4>
+<p>File: <code>enterprise/deploy.sh</code> (~620 lines). Docker builds on EC2 (not locally) — source tarball → S3 → EC2 builds ARM image → ECR push. You don't need Docker installed.</p>
+<h4>CloudFormation Resources</h4>
+<div class="code">VPC + Subnet + IGW + Route Table
+EC2 (c7g.large Graviton, Ubuntu 24.04)
+ECR Repository | S3 Bucket | IAM Roles (EC2 + AgentCore)
+ECS Cluster + Task Def (Always-on) | EFS (persistent storage)
+Security Groups | DynamoDB permissions in AgentCore role</div>
+<h4>ec2-setup.sh Critical Step</h4>
+<p>Step 8 runs <code>ec2-setup.sh</code> on EC2 via SSM. It builds React frontend, installs systemd services, and injects <code>AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://localhost:8091</code> into Gateway service — this is what connects Gateway to H2 Proxy for multi-tenant routing.</p>
+<h4>Idempotency</h4>
+<p>Re-running is safe: detects existing stack → update. Docker uses --skip-build. DynamoDB uses put_item (upsert).</p>
+`,`
+<h4>deploy.sh 内部架构</h4>
+<p>文件：<code>enterprise/deploy.sh</code>（约 620 行）。Docker 在 EC2 上构建（非本地）——源码打包 → S3 → EC2 构建 ARM 镜像 → ECR 推送。无需本地安装 Docker。</p>
+<h4>CloudFormation 资源</h4>
+<div class="code">VPC + 子网 + IGW + 路由表
+EC2 (c7g.large Graviton, Ubuntu 24.04)
+ECR 仓库 | S3 桶 | IAM 角色 (EC2 + AgentCore)
+ECS 集群 + 任务定义 (Always-on) | EFS (持久存储)
+安全组 | AgentCore 角色的 DynamoDB 权限</div>
+<h4>ec2-setup.sh 关键步骤</h4>
+<p>步骤 8 通过 SSM 在 EC2 运行 <code>ec2-setup.sh</code>。构建 React 前端，安装 systemd 服务，注入 <code>AWS_ENDPOINT_URL_BEDROCK_RUNTIME=http://localhost:8091</code> 到 Gateway 服务——这是连接 Gateway 到 H2 Proxy 进行多租户路由的关键。</p>
+<h4>幂等性</h4>
+<p>重复运行安全：检测已有 stack → 更新。Docker 用 --skip-build。DynamoDB 用 put_item（upsert）。</p>
+`)
+    + deep(`
+<h4>DynamoDB Schema</h4>
+<div class="code">DEPT#{dept_id}  — id, name, parentId, headCount
+POS#{pos_id}   — id, name, departmentId, toolAllowlist, defaultSkills, memberCount
+EMP#{emp_id}   — id, name, positionId, departmentId, agentId, channels[], agentStatus</div>
+<h4>Auto-Provisioning Code Path</h4>
+<p>File: <code>enterprise/admin-console/server/routers/org.py</code> → <code>_auto_provision_employee()</code></p>
+<p>When an employee is created or assigned to a position: (1) Create AGENT# record in DynamoDB. (2) Create BIND# record (1:1, serverless). (3) Write SSM position parameter. (4) Create audit entry. Happens automatically — admin never manually creates agents.</p>
+<h4>Position → Agent Inheritance</h4>
+<p>Changing a position's SOUL/tools affects all agents in that role because agents don't store their own SOUL — they inherit it at runtime from S3 <code>_shared/soul/positions/{pos_id}/SOUL.md</code>. The workspace_assembler reads this fresh on every cold start.</p>
+`,`
+<h4>DynamoDB 表结构</h4>
+<div class="code">DEPT#{dept_id}  — id, name, parentId, headCount
+POS#{pos_id}   — id, name, departmentId, toolAllowlist, defaultSkills, memberCount
+EMP#{emp_id}   — id, name, positionId, departmentId, agentId, channels[], agentStatus</div>
+<h4>自动配置代码路径</h4>
+<p>文件：<code>enterprise/admin-console/server/routers/org.py</code> → <code>_auto_provision_employee()</code></p>
+<p>创建员工或分配岗位时：(1) 创建 AGENT# 记录。(2) 创建 BIND# 记录（1:1, serverless）。(3) 写入 SSM 位置参数。(4) 创建审计条目。全自动——管理员不手动创建 Agent。</p>
+<h4>岗位 → Agent 继承</h4>
+<p>修改岗位的 SOUL/工具影响该角色所有 Agent，因为 Agent 不存储自己的 SOUL——运行时从 S3 <code>_shared/soul/positions/{pos_id}/SOUL.md</code> 继承。workspace_assembler 在每次冷启动时重新读取。</p>
+`)
+    + deep(`
+<h4>Complete IM Message Flow</h4>
+<div class="code">1. Employee sends message in Feishu
+2. Gateway receives webhook → local agent processes → calls Bedrock API
+3. AWS SDK redirected to H2 Proxy (port 8091) via AWS_ENDPOINT_URL env
+4. H2 Proxy: extractUserMessage() extracts channel=feishu, userId=ou_xxx
+5. H2 Proxy: PATH C checks for /start TOKEN (pairing flow)
+6. H2 Proxy: checkImBinding() → GET /api/v1/internal/im-binding-check
+   → DynamoDB MAPPING#{feishu}__{ou_xxx} → employeeId
+7. H2 Proxy: forwardToTenantRouter() → POST /route
+8. Tenant Router: derive_tenant_id() → emp__emp-mike__hash
+9. Tenant Router: invoke_agent_runtime() → AgentCore VM
+10. AgentCore: workspace_assembler merges SOUL → openclaw agent CLI
+11. Response flows back through the chain</div>
+<h4>Pairing: PATH C in bedrock_proxy_h2.js</h4>
+<p>Step 1: <code>/start TOKEN</code> → H2 Proxy matches regex, calls <code>/api/v1/bindings/pair-pending</code> → stores in <code>pendingPairings</code> Map → injects "Reply BIND to confirm".</p>
+<p>Step 2: <code>BIND</code> → H2 Proxy matches <code>\bBIND\b</code> (word boundary, not ^$), calls <code>/api/v1/bindings/pair-complete</code> → writes DynamoDB <code>MAPPING#feishu__ou_xxx</code> → clears binding cache → injects "Connected!"</p>
+<h4>Binding Cache</h4>
+<p><code>_bindingCache</code> Map with 60s TTL. After pair-complete, cache is explicitly cleared so next message routes immediately.</p>
+<h4>⚠️ DM Policy Must Be "Open"</h4>
+<p>If Gateway DM policy is "Pairing", Gateway blocks unrecognized users BEFORE the message reaches H2 Proxy. H2 Proxy never sees the message → pairing flow never triggers → employees are stuck. "Open" mode lets all messages through to H2 Proxy, which then enforces binding check at a more intelligent level.</p>
+`,`
+<h4>完整 IM 消息流</h4>
+<div class="code">1. 员工在飞书发消息
+2. Gateway 接收 webhook → 本地 agent 处理 → 调用 Bedrock API
+3. AWS SDK 通过 AWS_ENDPOINT_URL 环境变量重定向到 H2 Proxy (8091)
+4. H2 Proxy: extractUserMessage() 提取 channel=feishu, userId=ou_xxx
+5. H2 Proxy: PATH C 检查 /start TOKEN（配对流程）
+6. H2 Proxy: checkImBinding() → GET /api/v1/internal/im-binding-check
+   → DynamoDB MAPPING#{feishu}__{ou_xxx} → employeeId
+7. H2 Proxy: forwardToTenantRouter() → POST /route
+8. Tenant Router: derive_tenant_id() → emp__emp-mike__hash
+9. Tenant Router: invoke_agent_runtime() → AgentCore VM
+10. AgentCore: workspace_assembler 合并 SOUL → openclaw agent CLI
+11. 响应原路返回</div>
+<h4>配对：bedrock_proxy_h2.js 的 PATH C</h4>
+<p>步骤 1：<code>/start TOKEN</code> → H2 Proxy 正则匹配，调用 <code>/api/v1/bindings/pair-pending</code> → 存入 <code>pendingPairings</code> Map → 注入"回复 BIND 确认"。</p>
+<p>步骤 2：<code>BIND</code> → H2 Proxy 匹配 <code>\bBIND\b</code>（单词边界，非 ^$），调用 <code>/api/v1/bindings/pair-complete</code> → 写入 DynamoDB <code>MAPPING#feishu__ou_xxx</code> → 清除绑定缓存 → 注入"Connected!"</p>
+<h4>绑定缓存</h4>
+<p><code>_bindingCache</code> Map，60 秒 TTL。pair-complete 后显式清除缓存，下条消息立即路由。</p>
+<h4>⚠️ DM 策略必须为 "Open"</h4>
+<p>如果 Gateway DM 策略是"Pairing"，Gateway 在消息到达 H2 Proxy 之前就阻止未识别用户。H2 Proxy 永远看不到消息 → 配对流程永远不触发 → 员工卡住。"Open"模式让所有消息通过到 H2 Proxy，由 H2 Proxy 在更智能的层级强制执行绑定检查。</p>
+`); }},
 
 org: { en:{title:'Organization Management',sub:'Departments → Positions → Employees — the foundation of agent governance.'}, zh:{title:'组织架构管理',sub:'部门 → 岗位 → 员工 — Agent 治理的基础。'}, body(){ return intent('The organization module has three layers mirroring your real company. <strong>Departments</strong> = isolation boundaries. <strong>Positions</strong> = Agent DNA (SOUL + skills + tools + permissions). <strong>Employees</strong> = auto-provisioned. Assign position → agent created with everything inherited. You manage <strong>10 positions instead of 500 agents</strong>.','组织模块有三层映射真实公司。<strong>部门</strong> = 隔离边界。<strong>岗位</strong> = Agent DNA（SOUL + 技能 + 工具 + 权限）。<strong>员工</strong> = 自动配置。分配岗位 → Agent 自动创建并继承一切。您管理<strong>10 个岗位而非 500 个 Agent</strong>。') + sectionHead(t('Departments','部门')) + note('info','📍',t('<strong>Organization → Departments.</strong> Hierarchy tree with headcount. Managers only see their department scope.','<strong>Organization → Departments。</strong>层级树含人数。经理只看到自己部门范围。')) + sectionHead(t('Positions — Agent DNA','岗位 — Agent DNA')) + steps(t('Operations:','操作：'),t(['Organization → Positions. Each shows member count + SOUL status.','Click position → SOUL tab → write role behavior.','Skills & Tools tab → assign tool permissions per role.','Positions with "Empty" SOUL need attention.'],['Organization → Positions。每个显示成员数 + SOUL 状态。','点击岗位 → SOUL 标签 → 编写角色行为。','Skills & Tools 标签 → 分配各角色工具权限。','标记"Empty"SOUL 的岗位需要配置。'])) + sectionHead(t('Employees — Auto-Provisioning','员工 — 自动配置')) + steps(t('Operations:','操作：'),t(['Organization → Employees. All with position, channels, agent status.','Add Employee → select position → auto-provisioned (Serverless).','Each gets 1:1 agent binding. Upgrade to Always-on later if needed.','Click employee → edit personal SOUL, view IM channels.'],['Organization → Employees。显示岗位、通道、Agent 状态。','添加员工 → 选择岗位 → 自动配置（Serverless）。','每个获得 1:1 Agent 绑定。需要时可升级为 Always-on。','点击员工 → 编辑个人 SOUL，查看 IM 通道。'])) + note('tip','💡',t('<strong>Value:</strong> 50 new hires → assign to position → 50 agents instantly with correct SOUL, skills, permissions. Zero manual config.','<strong>价值：</strong>50 名新员工 → 分配岗位 → 50 个 Agent 立即拥有正确的 SOUL、技能、权限。零手动配置。')); }},
 
@@ -530,7 +621,38 @@ kb: { en:{title:'Knowledge Base',sub:'Company library — upload, categorize, as
 im: { en:{title:'IM Channels — Last Mile',sub:'Connect IM platforms for employee chat.'}, zh:{title:'IM 渠道 — 最后一公里',sub:'连接 IM 平台让员工聊天。'}, body(){ return intent('IM channels = <strong>last mile</strong>. Agents meet employees where they are (Feishu, Telegram, Discord, Slack). Admin configures once via Gateway UI. Employees self-pair via Portal. <strong>DM access mode MUST be "Open"</strong> — H2 Proxy handles identity, not Gateway.','IM 渠道 = <strong>最后一公里</strong>。Agent 在员工已有平台交流（飞书、Telegram、Discord、Slack）。管理员在 Gateway UI 配置一次。员工通过门户自助配对。<strong>DM 访问模式必须选 "Open"</strong> — H2 Proxy 处理身份验证。') + steps(t('Setup:','设置：'),t(['Port-forward to Gateway UI (port 18789)','Channels → Add Feishu/Telegram/Discord','<strong>DM access = "Open"</strong> (not Pairing!)','Admin Console → IM Channels → Refresh → "Bot Active"','Employees: Portal → Connect IM → self-pair'],['端口转发到 Gateway UI（端口 18789）','Channels → 添加飞书/Telegram/Discord','<strong>DM 访问 = "Open"</strong>（不是 Pairing！）','Admin Console → IM Channels → 刷新 → "Bot Active"','员工：Portal → Connect IM → 自助配对'])) + note('warn','⚠️',t('<strong>Critical:</strong> If DM policy is "Pairing", employees get blocked. H2 Proxy does binding check — Gateway-level pairing is unnecessary for enterprise.','<strong>关键：</strong>如果 DM 策略是"Pairing"，员工会被阻止。H2 Proxy 做绑定检查 — 企业版不需要 Gateway 层配对。')); }},
 
 sec: { en:{title:'Security Center',sub:'Defense in depth — 4 independent layers.'}, zh:{title:'安全中心',sub:'纵深防御 — 4 层独立防护。'}, body(){ return intent('SOUL says what agents <strong>should</strong> do. Security enforces what they <strong>can</strong> do. 4 layers: L1 SOUL (prompt rules), L2 Permission (tool allowlist), L3 Guardrail (Bedrock filtering), L4 Runtime (isolated VM). Bank vault: lock + alarm + guard.','SOUL 说明 Agent <strong>应该</strong>做什么。安全强制执行 Agent <strong>能</strong>做什么。4 层：L1 SOUL（提示规则）、L2 Permission（工具白名单）、L3 Guardrail（Bedrock 过滤）、L4 Runtime（隔离 VM）。银行保险库：锁 + 警报 + 保安。')
-    + card(t('Defense Layers','防护层次'),['L4','Runtime','Isolated Firecracker microVM','var(--primary)','L3','Guardrail','Bedrock content filtering','var(--cyan)','L2','Permission','Tool allowlist per position','var(--success)','L1','SOUL','Prompt-level rules','var(--warn)'].reduce((a,_,i,arr)=>i%4===0?a+`<div style="display:flex;align-items:center;gap:10px;padding:6px 0;font-size:12px"><span style="color:${arr[i+3]};font-weight:700;width:28px">${arr[i]}</span><span style="font-weight:600;min-width:90px">${arr[i+1]}</span><span style="color:var(--text-m)">${arr[i+2]}</span></div>`:a,'')); }},
+    + card(t('Defense Layers','防护层次'),['L4','Runtime','Isolated Firecracker microVM','var(--primary)','L3','Guardrail','Bedrock content filtering','var(--cyan)','L2','Permission','Tool allowlist per position','var(--success)','L1','SOUL','Prompt-level rules','var(--warn)'].reduce((a,_,i,arr)=>i%4===0?a+`<div style="display:flex;align-items:center;gap:10px;padding:6px 0;font-size:12px"><span style="color:${arr[i+3]};font-weight:700;width:28px">${arr[i]}</span><span style="font-weight:600;min-width:90px">${arr[i+1]}</span><span style="color:var(--text-m)">${arr[i+2]}</span></div>`:a,''))
+    + deep(`
+<h4>4-Layer Implementation Details</h4>
+<table class="tbl">
+<tr><th>Layer</th><th>Where</th><th>How</th><th>Configurable By</th></tr>
+<tr><td>L1 SOUL</td><td>SOUL.md in workspace</td><td>Prompt-level: "You MUST NOT use shell commands"</td><td>IT Admin (Global), Dept Manager (Position)</td></tr>
+<tr><td>L2 Permission</td><td>permissions.py in AgentCore container</td><td>Reads POS#{positionId}.toolAllowlist from DynamoDB. Injects &lt;!-- PLAN A --&gt; block into SOUL.md at assembly time.</td><td>IT Admin via Security Center</td></tr>
+<tr><td>L3 Guardrail</td><td>server.py _apply_guardrail()</td><td>Calls Bedrock Guardrail API (INPUT + OUTPUT check). Blocks content matching topic policies.</td><td>AWS Bedrock Console</td></tr>
+<tr><td>L4 Runtime</td><td>AgentCore Firecracker microVM</td><td>Each employee gets isolated VM. No cross-tenant file/process/network access.</td><td>Automatic (AWS managed)</td></tr>
+</table>
+<h4>Permission Resolution Chain</h4>
+<div class="code">permissions.py:read_permission_profile(tenant_id)
+  → _base_tenant_id(): extract emp_id from tenant_id
+  → DynamoDB: get_item(EMP#{emp_id}) → positionId
+  → DynamoDB: get_item(POS#{positionId}) → toolAllowlist
+  → Return: { "profile": "sa", "tools": ["web_search","shell","browser","file"] }</div>
+`,`
+<h4>4 层实现细节</h4>
+<table class="tbl">
+<tr><th>层</th><th>位置</th><th>实现方式</th><th>由谁配置</th></tr>
+<tr><td>L1 SOUL</td><td>工作区 SOUL.md</td><td>提示级："你不能使用 shell 命令"</td><td>IT 管理员（全局），部门经理（岗位）</td></tr>
+<tr><td>L2 Permission</td><td>AgentCore 容器 permissions.py</td><td>从 DynamoDB POS#{positionId}.toolAllowlist 读取。组装时注入 &lt;!-- PLAN A --&gt; 到 SOUL.md。</td><td>IT 管理员通过安全中心</td></tr>
+<tr><td>L3 Guardrail</td><td>server.py _apply_guardrail()</td><td>调用 Bedrock Guardrail API（INPUT + OUTPUT 检查）。拦截匹配主题策略的内容。</td><td>AWS Bedrock 控制台</td></tr>
+<tr><td>L4 Runtime</td><td>AgentCore Firecracker 微虚拟机</td><td>每员工独立 VM。无跨租户文件/进程/网络访问。</td><td>自动（AWS 管理）</td></tr>
+</table>
+<h4>权限解析链</h4>
+<div class="code">permissions.py:read_permission_profile(tenant_id)
+  → _base_tenant_id(): 从 tenant_id 提取 emp_id
+  → DynamoDB: get_item(EMP#{emp_id}) → positionId
+  → DynamoDB: get_item(POS#{positionId}) → toolAllowlist
+  → 返回: { "profile": "sa", "tools": ["web_search","shell","browser","file"] }</div>
+`); }},
 
 monitor: { en:{title:'Monitor Center',sub:'Live sessions, agent health, alerts.'}, zh:{title:'监控中心',sub:'实时会话、Agent 健康、告警。'}, body(){ return intent('Without monitoring = <strong>flying blind</strong>. Live sessions, CloudWatch trends, quality scores. Alert rules = <strong>know before users do</strong>.','没有监控 = <strong>盲飞</strong>。实时会话、CloudWatch 趋势、质量分。告警规则 = <strong>在用户之前发现问题</strong>。') + note('info','📍',t('<strong>Navigate:</strong> Monitor → tabs: Live Sessions, Agent Health, Alert Rules, Runtime Events.','<strong>导航：</strong>Monitor → 标签：Live Sessions、Agent Health、Alert Rules、Runtime Events。')); }},
 
@@ -547,9 +669,47 @@ settings: { en:{title:'Settings & System',sub:'Model config, agent config, healt
     + `<tr><td><span class="badge blue">pos-exec</span></td><td>Claude Sonnet 4.6</td><td>$3.00/1M</td><td>${t('Executive tier','高管层级')}</td></tr></table>`; }},
 
 // ═══ EMPLOYEE PORTAL ═══
-'portal-chat': { en:{title:'Chat with Your Agent',sub:'Full-screen chat — knows your role, remembers conversations.'}, zh:{title:'与 Agent 对话',sub:'全屏聊天 — 了解角色，记住对话。'}, body(){ return intent('90% of your time is here. First message ~6s (cold start), then fast. Agent knows your role, has team skills, <strong>remembers previous conversations</strong>.','90% 时间在这里。首次消息约 6 秒（冷启动），之后很快。Agent 了解角色，有团队技能，<strong>记住之前的对话</strong>。') + note('info','📍',t('<strong>Portal → Chat</strong> (first item). Shows "Connected" with model name.','<strong>Portal → Chat</strong>（第一项）。显示"Connected"和模型名称。')); }},
+'portal-chat': { en:{title:'Chat with Your Agent',sub:'Full-screen chat — knows your role, remembers conversations.'}, zh:{title:'与 Agent 对话',sub:'全屏聊天 — 了解角色，记住对话。'}, body(){ return intent('90% of your time is here. First message ~6s (cold start), then fast. Agent knows your role, has team skills, <strong>remembers previous conversations</strong>.','90% 时间在这里。首次消息约 6 秒（冷启动），之后很快。Agent 了解角色，有团队技能，<strong>记住之前的对话</strong>。') + note('info','📍',t('<strong>Portal → Chat</strong> (first item). Shows "Connected" with model name.','<strong>Portal → Chat</strong>（第一项）。显示"Connected"和模型名称。'))
+    + deep(`
+<h4>Portal Chat → AgentCore Flow</h4>
+<div class="code">POST /api/v1/portal/chat { message }
+  → portal.py: require_auth() → JWT → emp_id
+  → Find BIND# (employeeId=emp_id, mode="1:1")
+  → POST localhost:8090/route { channel:"portal", user_id:emp_id }
+  → Tenant Router → AgentCore VM
+  → workspace_assembler → openclaw agent → Bedrock
+  → Return { response, source:"agentcore" }</div>
+<h4>Fallback</h4>
+<p>AgentCore unreachable → reads SOUL.md + USER.md from S3 → offline response (source:"offline").</p>
+`,`
+<h4>Portal Chat → AgentCore 流程</h4>
+<div class="code">POST /api/v1/portal/chat { message }
+  → portal.py: require_auth() → JWT → emp_id
+  → 查找 BIND#（employeeId=emp_id, mode="1:1"）
+  → POST localhost:8090/route { channel:"portal", user_id:emp_id }
+  → Tenant Router → AgentCore VM
+  → workspace_assembler → openclaw agent → Bedrock
+  → 返回 { response, source:"agentcore" }</div>
+<h4>降级</h4>
+<p>AgentCore 不可达 → 从 S3 读取 SOUL.md + USER.md → 离线响应（source:"offline"）。</p>
+`); }},
 
-'portal-im': { en:{title:'Connect IM — Chat Anywhere',sub:'Self-service pairing: QR → /start → BIND.'}, zh:{title:'连接 IM — 随时随地对话',sub:'自助配对：QR → /start → BIND。'}, body(){ return intent('Use your agent <strong>without opening the portal</strong>. Pairing = two-factor auth: portal knows who you are, /start TOKEN proves the IM account is yours.','<strong>无需打开门户</strong>使用 Agent。配对 = 双因素认证：门户知道你是谁，/start TOKEN 证明 IM 账户属于你。') + steps(t('3-step pairing:','3 步配对：'),t(['Portal → Connect IM → click "Connect" on Feishu → get token + QR','Open Feishu, find company bot, send <code>/start TOKEN</code>','Bot: "Linking to [Name · Position]. Reply BIND" → send <strong>BIND</strong> → Done!'],['Portal → Connect IM → 点击飞书"Connect" → 获取令牌 + QR','打开飞书，找到公司 bot，发送 <code>/start TOKEN</code>','Bot："绑定 [姓名 · 岗位]。回复 BIND" → 发送 <strong>BIND</strong> → 完成！'])); }},
+'portal-im': { en:{title:'Connect IM — Chat Anywhere',sub:'Self-service pairing: QR → /start → BIND.'}, zh:{title:'连接 IM — 随时随地对话',sub:'自助配对：QR → /start → BIND。'}, body(){ return intent('Use your agent <strong>without opening the portal</strong>. Pairing = two-factor auth: portal knows who you are, /start TOKEN proves the IM account is yours.','<strong>无需打开门户</strong>使用 Agent。配对 = 双因素认证：门户知道你是谁，/start TOKEN 证明 IM 账户属于你。') + steps(t('3-step pairing:','3 步配对：'),t(['Portal → Connect IM → click "Connect" on Feishu → get token + QR','Open Feishu, find company bot, send <code>/start TOKEN</code>','Bot: "Linking to [Name · Position]. Reply BIND" → send <strong>BIND</strong> → Done!'],['Portal → Connect IM → 点击飞书"Connect" → 获取令牌 + QR','打开飞书，找到公司 bot，发送 <code>/start TOKEN</code>','Bot："绑定 [姓名 · 岗位]。回复 BIND" → 发送 <strong>BIND</strong> → 完成！']))
+    + deep(`
+<h4>3-Step Pairing Implementation</h4>
+<div class="code">Step 1: Portal → pair-start → PAIR# token in DynamoDB → return QR + token
+Step 2: Feishu /start TOKEN → H2 Proxy PATH C → pair-pending API → "Reply BIND"
+Step 3: BIND → pair-complete API → DynamoDB MAPPING# created → cache cleared</div>
+<h4>Key: H2 Proxy word boundary matching</h4>
+<p>BIND matched with <code>\bBIND\b</code> not <code>^BIND$</code> because Gateway wraps user text in metadata blocks. QR deep link reads appId dynamically from Gateway's openclaw.json.</p>
+`,`
+<h4>3 步配对实现</h4>
+<div class="code">步骤 1: Portal → pair-start → DynamoDB PAIR# 令牌 → 返回 QR + 令牌
+步骤 2: 飞书 /start TOKEN → H2 Proxy PATH C → pair-pending API → "回复 BIND"
+步骤 3: BIND → pair-complete API → DynamoDB MAPPING# 创建 → 缓存清除</div>
+<h4>关键：H2 Proxy 单词边界匹配</h4>
+<p>BIND 用 <code>\bBIND\b</code> 而非 <code>^BIND$</code> 匹配，因为 Gateway 将用户文本包装在 metadata 块中。QR 深链接从 Gateway 的 openclaw.json 动态读取 appId。</p>
+`); }},
 
 'portal-profile': { en:{title:'My Profile',sub:'Edit USER.md — personal SOUL layer.'}, zh:{title:'我的档案',sub:'编辑 USER.md — 个人 SOUL 层。'}, body(){ return intent('Make the agent <strong>"yours"</strong>. Working style, response format, timezone. <strong>Doesn\'t override company rules</strong>, adds preferences on top.','让 Agent <strong>"变成你的"</strong>。工作风格、响应格式、时区。<strong>不覆盖公司规则</strong>，在其上添加偏好。') + note('info','📍',t('<strong>Portal → My Profile.</strong> Edit USER.md directly. Changes on next session.','<strong>Portal → My Profile。</strong>直接编辑 USER.md。下次会话生效。')); }},
 
