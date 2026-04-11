@@ -51,67 +51,33 @@ Every agent uses the same Docker image. Admin chooses the deployment mode per ag
 
 ### EKS (Kubernetes) — For Container-Native Infrastructure
 
-| | Behavior |
-|-|---------|
-| **Cold start** | None — pod is always running |
-| **Operator-managed** | OpenClaw Operator watches `OpenClawInstance` CRDs → StatefulSet + Service + PVC |
-| **Persistence** | EFS-backed PVC (default StorageClass) — durable across pod restarts |
-| **Cluster management** | Discover and associate EKS clusters from the Admin Console (Settings → EKS) |
-| **Internet access** | ALB Ingress (enabled by default in Terraform), custom domain + HTTPS via ACM |
-| **Helm chart** | Admin console packaged as Helm chart: ServiceAccount, RBAC, Deployment, Service, Ingress |
-| **China region** | `china-image-mirror.sh` mirrors operator images to China ECR; `globalRegistry` CRD field rewrites all image registries |
-| **Deploy API** | Full infra configuration: model, CPU/memory, storage, runtime class (Kata), chromium sidecar, backup, node selector, tolerations |
-| **Best for** | Teams already running on Kubernetes, multi-cluster deployments, Graviton/GPU workloads, AWS China regions |
-
-Admin selects deployment mode when creating an agent in **Agent Factory**. The Agent Factory shows all three runtime tabs (Serverless, ECS, EKS) with live instance status. The EKS tab includes a **Deploy Agent** modal with all infrastructure configuration options.
+Kubernetes-native deployment using the OpenClaw Operator and `OpenClawInstance` CRDs. Best for teams already on Kubernetes, multi-cluster setups, or AWS China regions.
 
 **[→ EKS Deployment Guide (EN)](docs/DEPLOYMENT_EKS.md)** · **[→ EKS 部署指南 (中文)](docs/DEPLOYMENT_EKS_CN.md)**
 
 ---
 
-## Security: Defense in Depth Across All Runtimes
-
-### 5-Layer Security Model
+## Security: Hardware-Level Isolation at Every Layer
 
 | Layer | Mechanism | Bypassed by prompt injection? |
 |-------|-----------|-------------------------------|
 | L1 — Prompt | SOUL.md rules ("Finance never uses shell") | ⚠️ Theoretically possible |
 | L2 — Application | Skills manifest `allowedRoles`/`blockedRoles` | ⚠️ Code bug risk |
 | **L3 — IAM** | **Runtime role has no permission on target resource** | **Impossible** |
-| **L4 — Compute** | **Isolation boundary per agent (see table below)** | **Impossible** |
-| **L5 — Guardrail** | **Bedrock Guardrail checks every input + output: topic denial, PII filtering, compliance policies** | **Impossible — AWS-managed, semantic AI layer** |
+| **L4 — Compute** | **Firecracker microVM per agent (AgentCore / ECS Fargate)** | **Impossible** |
+| **L5 — Guardrail** | **Bedrock Guardrail checks every input + output** | **Impossible** |
 
-L1-L2 are soft (prompt/application level). L3-L5 are hard infrastructure boundaries — no amount of prompt injection, jailbreaking, or tool-call abuse can bypass them. An intern's agent IAM role literally cannot read the exec S3 bucket — even if the LLM tries. And even if it could, the Guardrail blocks the output before it reaches the user.
-
-### L4 Compute Isolation: Runtime Comparison
-
-The three runtimes provide different levels of compute isolation. Choose based on your security posture:
-
-| | AgentCore (Serverless) | ECS (Fargate) | EKS (Pods) | EKS + Kata Containers |
-|---|---|---|---|---|
-| **Isolation** | Firecracker microVM | Fargate microVM | Linux cgroups/namespaces | Firecracker microVM (Kata) |
-| **Boundary** | Hypervisor (KVM) | Hypervisor (KVM) | Kernel (shared) | Hypervisor (KVM) |
-| **Kernel** | Dedicated per invocation | Dedicated per task | **Shared with node** | Dedicated per pod |
-| **Prompt injection → escape?** | **Impossible** — microVM boundary | **Impossible** — Fargate boundary | ⚠️ Kernel exploit theoretically possible (rare) | **Impossible** — microVM boundary |
-| **Cross-tenant visibility** | None — separate microVMs | None — separate tasks | ⚠️ Shared node, requires NetworkPolicy | None — separate microVMs |
-| **Best for** | Maximum isolation, compliance | Persistent agents, moderate security | Dev/test, cost-optimized | Production K8s with compliance |
-
-**Key takeaway:** AgentCore and ECS Fargate provide **hardware-level** isolation per agent via Firecracker microVMs — the same technology powering AWS Lambda. An LLM-driven agent cannot observe, interfere with, or escape to another agent's execution environment, regardless of how sophisticated the prompt injection is.
-
-Standard EKS pods share the host kernel. While Kubernetes namespaces, cgroups, and NetworkPolicy provide strong isolation for most workloads, a theoretical kernel exploit could cross the boundary. For production EKS deployments requiring the same isolation guarantees as AgentCore:
-
-- **Enable Kata Containers** (`enable_kata = true` in Terraform) — runs each pod in its own Firecracker microVM on bare-metal nodes, restoring hypervisor-level isolation
-- **Use dedicated node groups** per security tier — prevent co-scheduling of different trust levels
-- **Enforce NetworkPolicy** — the OpenClaw Operator creates per-instance NetworkPolicy by default
+L3-L5 are hard infrastructure boundaries — no prompt injection can bypass them.
 
 ### Additional Controls
 
-- No public ports (SSM only for EC2, ClusterIP for EKS)
+- No public ports (SSM only)
 - IAM roles throughout, no hardcoded credentials
 - Gateway token in SSM SecureString, never on disk
 - VPC isolation between runtimes
-- Pod Identity (EKS) or IRSA for least-privilege AWS access
 - RBAC: admin/manager/employee with scope-limited visibility
+
+For detailed compute isolation comparison across runtimes (AgentCore vs ECS vs EKS vs Kata), see [SECURITY.md](SECURITY.md#compute-isolation-enterprise-multi-tenant).
 
 ---
 

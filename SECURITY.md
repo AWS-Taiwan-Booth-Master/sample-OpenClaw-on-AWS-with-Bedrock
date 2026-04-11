@@ -111,21 +111,9 @@ AllowedSSHCIDR: 127.0.0.1/32  # Disables SSH
 
 ### 5. Compute Isolation (Enterprise Multi-Tenant)
 
-When running agents for multiple users, compute isolation prevents one agent from observing or interfering with another — even if the LLM is compromised via prompt injection.
+When running agents for multiple users, compute isolation prevents one agent from observing or interfering with another. AgentCore and ECS Fargate provide hardware-level isolation via Firecracker microVMs (same technology as AWS Lambda). EKS deployments can enable Kata Containers for equivalent isolation.
 
-| Runtime | Isolation Technology | Boundary | Isolation Level |
-|---------|---------------------|----------|-----------------|
-| **AgentCore** | Firecracker microVM (same as Lambda) | KVM hypervisor | **Hardware** — dedicated kernel per invocation |
-| **ECS Fargate** | Fargate microVM | KVM hypervisor | **Hardware** — dedicated kernel per task |
-| **EKS Pods** | Linux cgroups + namespaces | Shared kernel | **OS-level** — strong but shared kernel |
-| **EKS + Kata** | Firecracker microVM via Kata Containers | KVM hypervisor | **Hardware** — dedicated kernel per pod |
-
-**Why this matters for AI agents:** Unlike traditional web services, AI agents execute arbitrary tool calls (shell commands, file operations, code execution) directed by an LLM. A prompt injection attack could cause an agent to attempt lateral movement. Hardware-level isolation (Firecracker) makes this impossible — even a kernel exploit inside the microVM cannot reach another agent's environment.
-
-**Recommendation:**
-- **Compliance workloads (HIPAA, SOC2, PCI):** Use AgentCore (serverless) or EKS with Kata Containers
-- **Standard enterprise:** ECS Fargate or AgentCore provide hardware isolation with no configuration
-- **Dev/test:** Standard EKS pods are sufficient with NetworkPolicy enforcement
+For detailed runtime comparison, see [docs/DEPLOYMENT_EKS.md](docs/DEPLOYMENT_EKS.md).
 
 ## Security Checklist
 

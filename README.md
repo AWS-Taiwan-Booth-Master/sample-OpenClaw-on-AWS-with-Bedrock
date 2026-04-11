@@ -328,30 +328,7 @@ Built on top of the Multi-Tenant AgentCore Runtime, the Enterprise platform adds
 
 ### EKS (Kubernetes) — For Container-Native Deployments
 
-> Run the Enterprise Admin Console and OpenClaw agents on Amazon EKS. Supports **AWS Global** and **AWS China** regions. Uses the OpenClaw Operator (Helm) to manage agent pods via `OpenClawInstance` CRDs.
-
-**Quick start (Terraform — full stack):**
-
-```bash
-# 1. Mirror images (China only — run before terraform apply)
-# bash eks/scripts/china-image-mirror.sh --region cn-northwest-1 --name openclaw-cn --profile china
-
-# 2. Deploy VPC + EKS + Operator
-cd eks/terraform && terraform apply \
-  -var="name=openclaw-prod" \
-  -var="enable_efs=true"
-
-# 3. Deploy an OpenClaw instance
-kubectl apply -f eks/manifests/examples/openclaw-bedrock-instance.yaml
-```
-
-| Feature | Details |
-|---------|---------|
-| **Full Terraform stack** | VPC, EKS, EFS, OpenClaw Operator — one `terraform apply` |
-| **Operator-managed** | OpenClaw Operator watches CRDs → StatefulSet + Service + PVC + ConfigMap |
-| **Optional modules** | ALB Controller, Kata Containers (Firecracker), Prometheus + Grafana, LiteLLM |
-| **China region support** | `china-image-mirror.sh` mirrors images + Helm charts to China ECR |
-| **Integration test** | `eks/scripts/integration-test.sh` — validates full deploy/reload/stop cycle |
+Run OpenClaw agents on Amazon EKS with Terraform. Supports AWS Global and China regions.
 
 **[→ EKS Deployment Guide (EN)](docs/DEPLOYMENT_EKS.md)** · **[→ EKS 部署指南 (中文)](docs/DEPLOYMENT_EKS_CN.md)**
 
