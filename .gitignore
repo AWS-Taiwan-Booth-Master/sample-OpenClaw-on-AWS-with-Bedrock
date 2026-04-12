@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Node
+node_modules/
+admin-console/dist/
+admin-console/node_modules/
+
+# IDE
+.vscode/
+.DS_Store
+**/.DS_Store
+
+# Build artifacts
+*.pkg
+enterprise/admin-console/dist/
+
+# Terraform
+eks/terraform/.terraform/
+eks/terraform/*.tfstate
+eks/terraform/*.tfstate.*
+eks/terraform/*.tfvars
+!eks/terraform/*.tfvars.example
+eks/terraform/.terraform.lock.hcl
+
+# Demo
+enterprise/demo/dist/
+
+# Blog (local only, not part of repo)
+enterprise/blog/
+
+# Brand assets (local only)
+enterprise/catnip-mascot/
+enterprise/.env
+enterprise/.env.*
+!enterprise/.env.example
+.claude/

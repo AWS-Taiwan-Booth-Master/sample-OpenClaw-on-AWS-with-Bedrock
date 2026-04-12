@@ -37,8 +37,8 @@ XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -u openclaw-gateway.service -n 
 # Check configuration
 cat ~/.openclaw/openclaw.json | python3 -m json.tool
 
-# Get gateway token
-cat ~/.openclaw/gateway_token.txt
+# Get gateway token from SSM Parameter Store
+bash ~/ssm-portforward.sh
 
 # Test Bedrock connection
 REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
@@ -68,7 +68,36 @@ sudo cat /var/log/cloud-init-output.log
 
 ## Common Issues
 
-### 1. Cannot Connect via SSM
+### 1. "No API key found for amazon-bedrock" After Upgrade
+
+**Symptom**: After upgrading OpenClaw (or deploying with version `2026.4.5` / `latest`), the agent fails with:
+```
+⚠ Agent failed before reply: No API key found for amazon-bedrock.
+Use /login or set an API key environment variable.
+```
+
+**Cause**: OpenClaw 2026.4.5+ switched its model engine to `pi-coding-agent`, which no longer reads `"auth": "aws-sdk"` from the config file. It requires the `AWS_PROFILE` environment variable to discover IAM credentials from the EC2 instance profile (IMDS). The gateway systemd service does not inherit shell environment variables, so `AWS_PROFILE` is missing at runtime.
+
+**Fix** (one command, no restart of EC2 needed):
+
+```bash
+# SSM into the instance, switch to ubuntu
+sudo -u ubuntu bash
+
+# Write AWS_PROFILE to the durable .env file (survives gateway reinstalls)
+echo "AWS_PROFILE=default" >> ~/.openclaw/.env
+
+# Restart gateway to pick up the change
+systemctl --user restart openclaw-gateway.service
+```
+
+> **Why this works**: `~/.openclaw/.env` is loaded by the gateway systemd service via `EnvironmentFile=`. Setting `AWS_PROFILE=default` tells the AWS SDK to resolve credentials from IMDS (EC2 instance profile), which is how Bedrock authentication works on EC2. This file is **not** overwritten by `openclaw gateway install --force` or upgrades.
+
+> **New deployments**: Templates updated after April 2026 write this file automatically during setup. Only existing deployments that upgrade in-place need this manual step.
+
+---
+
+### 2. Cannot Connect via SSM
 
 **Symptom**: `TargetNotConnected` or timeout when running `aws ssm start-session`
 
@@ -96,7 +125,7 @@ ssh -i openclaw-key.pem ubuntu@<instance-ip>
 sudo snap restart amazon-ssm-agent
 ```
 
-### 2. Web UI Shows "Disconnected" or Token Mismatch
+### 3. Web UI Shows "Disconnected" or Token Mismatch
 
 **Symptom**: Browser shows "Disconnected from gateway" or "unauthorized: gateway token mismatch"
 
@@ -119,8 +148,8 @@ aws ssm start-session \
   --document-name AWS-StartPortForwardingSession \
   --parameters '{"portNumber":["18789"],"localPortNumber":["18789"]}'
 
-# 3. Get correct token (on EC2)
-cat ~/.clawdbot/gateway_token.txt
+# 3. Get correct token (on EC2, via SSM Parameter Store)
+bash ~/ssm-portforward.sh
 
 # 4. Clear browser cache
 # Chrome: Cmd+Shift+Delete (Mac) or Ctrl+Shift+Delete (Windows)
@@ -134,7 +163,7 @@ XDG_RUNTIME_DIR=/run/user/1000 systemctl --user status clawdbot-gateway
 XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart clawdbot-gateway
 ```
 
-### 3. Model Returns Empty Response
+### 4. Model Returns Empty Response
 
 **Symptom**: Send message in Web Chat, no response or empty response
 
@@ -176,7 +205,7 @@ XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -u clawdbot-gateway -n 50 | gre
 # ❌ Bad: amazon.nova-2-lite-v1:0 (no prefix)
 ```
 
-### 4. Bedrock API Errors
+### 5. Bedrock API Errors
 
 **Symptom**: `AccessDeniedException`, `ThrottlingException`, or `ModelNotFound`
 
@@ -200,7 +229,7 @@ aws bedrock list-foundation-models \
 tail -f /tmp/clawdbot/clawdbot-$(date +%Y-%m-%d).log
 ```
 
-### 5. High Costs / Unexpected Bills
+### 6. High Costs / Unexpected Bills
 
 **Symptom**: Bedrock costs higher than expected
 
@@ -235,7 +264,7 @@ aws cloudwatch put-metric-alarm \
 XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -u clawdbot-gateway | grep -i "invoke"
 ```
 
-### 6. Gateway Won't Start
+### 7. Gateway Won't Start
 
 **Symptom**: `systemctl --user status clawdbot-gateway` shows failed
 
@@ -264,7 +293,7 @@ nohup clawdbot gateway start > /tmp/gateway.log 2>&1 &
 tail -f /tmp/gateway.log
 ```
 
-### 7. Port Forwarding Fails
+### 8. Port Forwarding Fails
 
 **Symptom**: `Connection to destination port failed`
 
@@ -302,7 +331,7 @@ aws ssm start-session \
   --parameters '{"portNumber":["18789"],"localPortNumber":["18789"]}'
 ```
 
-### 8. Slow Response Times
+### 9. Slow Response Times
 
 **Symptom**: openclaw takes long time to respond
 
@@ -327,7 +356,7 @@ ping bedrock-runtime.$REGION.amazonaws.com
 # Reduces latency by keeping traffic in AWS network
 ```
 
-### 9. Cannot Install Channels (WhatsApp/Telegram)
+### 10. Cannot Install Channels (WhatsApp/Telegram)
 
 **Symptom**: Error when adding channel in Web UI
 
@@ -348,7 +377,7 @@ XDG_RUNTIME_DIR=/run/user/1000 journalctl --user -u clawdbot-gateway -f
 # Check ~/.clawdbot/clawdbot.json for "dmPolicy": "pairing"
 ```
 
-### 10. AWS CLI "text contents could not be decoded" Error
+### 11. AWS CLI "text contents could not be decoded" Error
 
 **Symptom**: When running `aws cloudformation create-stack --template-body file://clawdbot-bedrock.yaml`, you get:
 ```
@@ -386,7 +415,7 @@ file -I clawdbot-bedrock.yaml
 git clone https://github.com/aws-samples/sample-Moltbot-on-AWS-with-Bedrock.git
 ```
 
-### 11. CloudFormation Stack Fails
+### 12. CloudFormation Stack Fails
 
 **Symptom**: Stack creation fails or rolls back
 
@@ -482,8 +511,11 @@ XDG_RUNTIME_DIR=/run/user/1000 systemctl --user stop clawdbot-gateway
 # Backup old config
 cp ~/.clawdbot/clawdbot.json ~/.clawdbot/clawdbot.json.backup.$(date +%s)
 
-# Get current values
-TOKEN=$(cat ~/.clawdbot/gateway_token.txt)
+# Get current values (token from SSM Parameter Store)
+IMDS_TOKEN=$(curl -s -X PUT http://169.254.169.254/latest/api/token -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $IMDS_TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+STACK_NAME=$(aws ec2 describe-tags --filters "Name=resource-id,Values=$INSTANCE_ID" "Name=key,Values=aws:cloudformation:stack-name" --query "Tags[0].Value" --output text --region $REGION)
+TOKEN=$(aws ssm get-parameter --name "/openclaw/$STACK_NAME/gateway-token" --with-decryption --query Parameter.Value --output text --region $REGION)
 REGION=$(curl -s http://169.254.169.254/latest/meta-data/placement/region)
 
 # Recreate config
@@ -529,6 +561,10 @@ cat > ~/.clawdbot/clawdbot.json << EOF
   }
 }
 EOF
+
+# Restore .env for Bedrock IAM auth (required for OpenClaw 2026.4.5+)
+# See: https://docs.openclaw.ai/providers/bedrock (EC2 Instance Roles)
+printf 'AWS_PROFILE=default\nAWS_REGION=%s\nAWS_DEFAULT_REGION=%s\n' "$REGION" "$REGION" > ~/.openclaw/.env
 
 # Restart service
 XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart clawdbot-gateway
@@ -643,7 +679,7 @@ cat /tmp/diagnostic-info.txt
 
 ```
 /home/ubuntu/.clawdbot/clawdbot.json          # Main configuration
-/home/ubuntu/.clawdbot/gateway_token.txt      # Gateway token
+# Gateway token: stored in SSM Parameter Store (not on disk)
 /home/ubuntu/.clawdbot/setup_status.txt       # Setup completion status
 /var/log/clawdbot-setup.log                   # Installation log
 /tmp/clawdbot/clawdbot-YYYY-MM-DD.log        # Daily logs
@@ -671,8 +707,8 @@ XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart clawdbot-gateway
 # Config
 cat ~/.clawdbot/clawdbot.json
 
-# Token
-cat ~/.clawdbot/gateway_token.txt
+# Token (from SSM Parameter Store)
+bash ~/ssm-portforward.sh
 
 # Test Bedrock
 aws bedrock-runtime invoke-model \
