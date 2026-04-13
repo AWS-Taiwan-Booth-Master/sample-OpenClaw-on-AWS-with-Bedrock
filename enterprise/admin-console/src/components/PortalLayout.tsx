@@ -1,6 +1,6 @@
 import { ReactNode, useEffect, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { MessageSquare, User, BarChart3, Puzzle, FileText, LogOut, Sun, Moon, Link2, ArrowLeft } from 'lucide-react';
+import { MessageSquare, User, BarChart3, Puzzle, FileText, LogOut, Sun, Moon, Link2, ArrowLeft, Bot } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
 import { api } from '../api/client';
@@ -9,6 +9,7 @@ import clsx from 'clsx';
 
 const NAV = [
   { label: 'Chat', href: '/portal', icon: <MessageSquare size={20} /> },
+  { label: 'My Agents', href: '/portal/agents', icon: <Bot size={20} /> },
   { label: 'My Profile', href: '/portal/profile', icon: <User size={20} /> },
   { label: 'My Usage', href: '/portal/usage', icon: <BarChart3 size={20} /> },
   { label: 'My Skills', href: '/portal/skills', icon: <Puzzle size={20} /> },

@@ -90,6 +90,7 @@ class PairPendingRequest(BaseModel):
 
 class PortalChatMessage(BaseModel):
     message: str
+    agent_type: str = "serverless"  # "serverless" or "always-on"
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -383,7 +384,36 @@ def portal_chat(body: PortalChatMessage, authorization: str = Header(default="")
     if not my_binding:
         raise HTTPException(404, "No agent bound. Contact IT to provision your agent.")
 
-    # Route through Tenant Router -> AgentCore
+    # Route based on agent_type
+    if body.agent_type == "always-on":
+        # Direct to Fargate container
+        agent_id = my_binding.get("agentId", "")
+        try:
+            _ssm_ao = boto3.client("ssm", region_name=GATEWAY_REGION)
+            endpoint = _ssm_ao.get_parameter(
+                Name=f"/openclaw/{STACK_NAME}/always-on/{agent_id}/endpoint"
+            )["Parameter"]["Value"]
+            import requests as _req_ao
+            session_id = f"ao__{user.employee_id}__portal"
+            r = _req_ao.post(f"{endpoint}/invocations", json={
+                "sessionId": session_id,
+                "tenant_id": session_id,
+                "message": body.message,
+            }, timeout=180)
+            if r.status_code == 200:
+                data = r.json()
+                return {
+                    "response": data.get("response", ""),
+                    "agentId": agent_id,
+                    "agentName": my_binding.get("agentName", ""),
+                    "source": "always-on",
+                    "model": data.get("model", ""),
+                }
+        except Exception as e:
+            print(f"[portal-chat] Always-on call failed: {e}")
+            # Fall through to serverless
+
+    # Route through Tenant Router -> AgentCore (serverless mode)
     router_url = os.environ.get("TENANT_ROUTER_URL", "http://localhost:8090")
     try:
         import requests as _req
@@ -841,3 +871,189 @@ def portal_refresh_agent(authorization: str = Header(default="")):
     from shared import stop_employee_session
     result = stop_employee_session(user.employee_id)
     return {"refreshed": True, "detail": result}
+
+
+# =========================================================================
+# Portal — My Agents (dual agent view)
+# =========================================================================
+
+@router.get("/api/v1/portal/my-agents")
+def portal_my_agents(authorization: str = Header(default="")):
+    """Return employee's two agents: serverless (always exists) + always-on (if enabled)."""
+    user = require_auth(authorization)
+    emp = db.get_employee(user.employee_id)
+    if not emp:
+        raise HTTPException(404, "Employee not found")
+
+    agent_id = emp.get("agentId", "")
+    agent = db.get_agent(agent_id) if agent_id else {}
+    pos = db.get_position(emp.get("positionId", ""))
+
+    # Serverless agent (always exists if agentId is set)
+    serverless = {
+        "type": "serverless",
+        "agentId": agent_id,
+        "agentName": agent.get("name", ""),
+        "status": "active" if agent_id else "not_configured",
+        "model": "via AgentCore runtime",
+        "positionName": pos.get("name", "") if pos else "",
+    }
+
+    # Always-on agent
+    ao_enabled = emp.get("alwaysOnEnabled", False)
+    always_on = {
+        "type": "always-on",
+        "enabled": ao_enabled,
+        "status": "not_configured",
+        "tier": emp.get("alwaysOnTier", ""),
+        "serviceName": emp.get("alwaysOnServiceName", ""),
+        "imChannels": [],
+    }
+
+    if ao_enabled:
+        always_on["status"] = "enabled"
+        # Get IM channels (masked)
+        im_creds = emp.get("imCredentials", {}) or {}
+        for ch, data in im_creds.items():
+            if data and isinstance(data, dict):
+                always_on["imChannels"].append({
+                    "channel": ch,
+                    "connectedAt": data.get("connectedAt", ""),
+                })
+        # Check if container is running
+        try:
+            ssm = boto3.client("ssm", region_name=GATEWAY_REGION)
+            ssm.get_parameter(
+                Name=f"/openclaw/{STACK_NAME}/always-on/{agent_id}/endpoint")
+            always_on["status"] = "running"
+        except Exception:
+            always_on["status"] = "stopped"
+
+    # Allowed IM platforms for this position
+    allowed_platforms = (pos or {}).get("allowedIMPlatforms", ["feishu", "telegram", "slack", "discord"])
+
+    return {
+        "serverless": serverless,
+        "alwaysOn": always_on,
+        "allowedIMPlatforms": allowed_platforms,
+    }
+
+
+@router.post("/api/v1/portal/agent/channels/add")
+def portal_add_channel(body: dict, authorization: str = Header(default="")):
+    """Employee self-service: connect an IM channel to their always-on container."""
+    user = require_auth(authorization)
+    emp = db.get_employee(user.employee_id)
+    if not emp:
+        raise HTTPException(404, "Employee not found")
+    if not emp.get("alwaysOnEnabled"):
+        raise HTTPException(400, "Always-on agent not enabled. Contact your admin.")
+
+    channel = body.get("channel", "")
+    if not channel:
+        raise HTTPException(400, "channel required")
+
+    # Check IM platform whitelist
+    pos = db.get_position(emp.get("positionId", ""))
+    allowed = (pos or {}).get("allowedIMPlatforms", ["feishu", "telegram", "slack", "discord"])
+    if channel not in allowed:
+        raise HTTPException(403, f"Platform '{channel}' not allowed for your position. Allowed: {allowed}")
+
+    # Extract credentials from body
+    cred_fields = {}
+    for k in ("token", "bot_token", "app_token", "app_id", "app_secret"):
+        v = body.get(k, "")
+        if v:
+            cred_fields[k.replace("_", "")] = v  # normalize: app_id → appId
+    # Map common names
+    if "appid" in cred_fields:
+        cred_fields["appId"] = cred_fields.pop("appid")
+    if "appsecret" in cred_fields:
+        cred_fields["appSecret"] = cred_fields.pop("appsecret")
+
+    # Save to DynamoDB EMP#.imCredentials
+    im_creds = emp.get("imCredentials", {}) or {}
+    cred_fields["connectedAt"] = datetime.now(timezone.utc).isoformat()
+    im_creds[channel] = cred_fields
+    db.update_employee(user.employee_id, {"imCredentials": im_creds})
+
+    # Call container to add channel
+    agent_id = emp.get("agentId", "")
+    container_result = {}
+    try:
+        ssm = boto3.client("ssm", region_name=GATEWAY_REGION)
+        endpoint = ssm.get_parameter(
+            Name=f"/openclaw/{STACK_NAME}/always-on/{agent_id}/endpoint"
+        )["Parameter"]["Value"]
+        import requests as _req_add
+        r = _req_add.post(f"{endpoint}/admin/channels/add",
+                         json={"channel": channel, **{k.replace("Id", "-id").replace("Secret", "-secret").replace("Token", "-token"): v for k, v in cred_fields.items() if k != "connectedAt"}},
+                         timeout=30)
+        container_result = r.json() if r.status_code == 200 else {"error": r.text[:200]}
+    except Exception as e:
+        container_result = {"error": str(e)}
+
+    # Audit
+    db.create_audit_entry({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "eventType": "config_change",
+        "actorId": user.employee_id,
+        "actorName": user.name,
+        "targetType": "im_channel",
+        "targetId": f"{user.employee_id}/{channel}",
+        "detail": f"Employee connected {channel} (self-service)",
+        "status": "success" if container_result.get("success") else "partial",
+    })
+
+    return {
+        "connected": True,
+        "channel": channel,
+        "containerResult": container_result,
+    }
+
+
+@router.delete("/api/v1/portal/agent/channels/{channel}")
+def portal_remove_channel(channel: str, authorization: str = Header(default="")):
+    """Employee self-service: disconnect an IM channel."""
+    user = require_auth(authorization)
+    emp = db.get_employee(user.employee_id)
+    if not emp:
+        raise HTTPException(404)
+
+    # Remove from DynamoDB
+    im_creds = emp.get("imCredentials", {}) or {}
+    im_creds.pop(channel, None)
+    db.update_employee(user.employee_id, {"imCredentials": im_creds})
+
+    # Call container
+    agent_id = emp.get("agentId", "")
+    try:
+        ssm = boto3.client("ssm", region_name=GATEWAY_REGION)
+        endpoint = ssm.get_parameter(
+            Name=f"/openclaw/{STACK_NAME}/always-on/{agent_id}/endpoint"
+        )["Parameter"]["Value"]
+        import requests as _req_rm
+        _req_rm.post(f"{endpoint}/admin/channels/remove", json={"channel": channel}, timeout=15)
+    except Exception:
+        pass
+
+    return {"disconnected": True, "channel": channel}
+
+
+@router.get("/api/v1/portal/agent/channels")
+def portal_get_channels(authorization: str = Header(default="")):
+    """Employee: get my IM channel connections."""
+    user = require_auth(authorization)
+    emp = db.get_employee(user.employee_id)
+    if not emp:
+        return {"channels": []}
+    im_creds = emp.get("imCredentials", {}) or {}
+    channels = []
+    for ch, data in im_creds.items():
+        if data and isinstance(data, dict):
+            channels.append({
+                "channel": ch,
+                "connected": True,
+                "connectedAt": data.get("connectedAt", ""),
+            })
+    return {"channels": channels}

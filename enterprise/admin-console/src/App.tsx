@@ -42,6 +42,7 @@ import PortalMyUsage from './pages/portal/MyUsage';
 import PortalMySkills from './pages/portal/MySkills';
 import PortalMyRequests from './pages/portal/MyRequests';
 import PortalBindIM from './pages/portal/BindIM';
+import PortalMyAgents from './pages/portal/MyAgents';
 
 function AppRoutes() {
   const { user, loading } = useAuth();
@@ -80,6 +81,8 @@ function AppRoutes() {
       <Route path="/portal/skills" element={user ? <PortalLayout><PortalMySkills /></PortalLayout> : <Navigate to="/login" replace />} />
       <Route path="/portal/requests" element={user ? <PortalLayout><PortalMyRequests /></PortalLayout> : <Navigate to="/login" replace />} />
       <Route path="/portal/channels" element={user ? <PortalLayout><PortalBindIM /></PortalLayout> : <Navigate to="/login" replace />} />
+      <Route path="/portal/agents" element={user ? <PortalLayout><PortalMyAgents /></PortalLayout> : <Navigate to="/login" replace />} />
+      <Route path="/portal/chat" element={user ? <PortalLayout><PortalChat /></PortalLayout> : <Navigate to="/login" replace />} />
 
       {/* Admin/Manager Console */}
       <Route path="/" element={user ? <Navigate to={user.role === 'employee' ? '/portal' : '/dashboard'} replace /> : <Navigate to="/login" replace />} />

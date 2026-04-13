@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { Send, Bot, User, Loader2, Trash2, Zap } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useAuth } from '../../contexts/AuthContext';
@@ -81,6 +82,10 @@ function WarmupIndicator() {
 export default function PortalChat() {
   const { user } = useAuth();
   const userId = user?.id || 'unknown';
+  const [searchParams] = useSearchParams();
+  const [agentType, setAgentType] = useState<'serverless' | 'always-on'>(
+    searchParams.get('agent') === 'always-on' ? 'always-on' : 'serverless'
+  );
 
   const [messages, setMessages] = useState<Message[]>(() => {
     const saved = loadMessages(userId);
@@ -120,7 +125,7 @@ export default function PortalChat() {
     setInput('');
     setSending(true);
 
-    const doCall = () => api.post<{ response: string; source?: string; model?: string }>('/portal/chat', { message: text });
+    const doCall = () => api.post<{ response: string; source?: string; model?: string }>('/portal/chat', { message: text, agent_type: agentType });
 
     try {
       const resp = await doCall();
@@ -176,6 +181,18 @@ export default function PortalChat() {
             <span className={`text-xs ${warm ? 'text-success' : 'text-warning'}`}>
               {warm ? 'Connected' : 'Standby'}
             </span>
+          </div>
+          <div className="flex rounded-lg border border-dark-border overflow-hidden text-xs">
+            <button
+              onClick={() => setAgentType('serverless')}
+              className={`px-2.5 py-1 flex items-center gap-1 transition-colors ${agentType === 'serverless' ? 'bg-primary/20 text-primary' : 'text-text-muted hover:bg-dark-hover'}`}>
+              <Bot size={12} /> Serverless
+            </button>
+            <button
+              onClick={() => setAgentType('always-on')}
+              className={`px-2.5 py-1 flex items-center gap-1 transition-colors ${agentType === 'always-on' ? 'bg-success/20 text-success' : 'text-text-muted hover:bg-dark-hover'}`}>
+              <Zap size={12} /> Always-On
+            </button>
           </div>
           <button onClick={clearChat}
             className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
