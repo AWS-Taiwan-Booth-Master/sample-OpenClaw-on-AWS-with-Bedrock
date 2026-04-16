@@ -54,6 +54,7 @@ module "eks" {
   eks_managed_node_group_defaults = {
     iam_role_additional_policies = {
       AmazonSSMManagedInstanceCore = "arn:${var.partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      AmazonEFSCSIDriverPolicy     = "arn:${var.partition}:iam::aws:policy/service-role/AmazonEFSCSIDriverPolicy"
     }
 
     ebs_optimized = true
@@ -94,6 +95,16 @@ module "eks" {
   }
 
   cluster_addons = {
+    coredns = {
+      most_recent = true
+    }
+    vpc-cni = {
+      most_recent = true
+      pod_identity_association = [{
+        role_arn        = aws_iam_role.vpc_cni.arn
+        service_account = "aws-node"
+      }]
+    }
     eks-pod-identity-agent = {
       most_recent = true
     }
@@ -114,6 +125,35 @@ module "eks" {
   }
 
   tags = var.tags
+}
+
+################################################################################
+# VPC CNI - Pod Identity IAM Role
+################################################################################
+
+resource "aws_iam_role" "vpc_cni" {
+  name = "${var.name}-vpc-cni"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "pods.eks.amazonaws.com"
+      }
+      Action = [
+        "sts:AssumeRole",
+        "sts:TagSession"
+      ]
+    }]
+  })
+
+  tags = var.tags
+}
+
+resource "aws_iam_role_policy_attachment" "vpc_cni" {
+  role       = aws_iam_role.vpc_cni.name
+  policy_arn = "arn:${var.partition}:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
 ################################################################################

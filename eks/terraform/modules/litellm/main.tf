@@ -110,6 +110,7 @@ resource "aws_eks_pod_identity_association" "litellm" {
 ################################################################################
 
 resource "helm_release" "litellm" {
+  force_update = true
   name       = "litellm"
   repository = var.chart_repository != "" ? var.chart_repository : "oci://ghcr.io/berriai"
   chart      = "litellm-helm"
@@ -175,10 +176,12 @@ resource "helm_release" "litellm" {
     value = "true"
   }
 
-  # PostgreSQL image from public ECR mirror
+  # PostgreSQL image — Docker Hub bitnami has multi-arch (amd64+arm64)
+  # public.ecr.aws/bitnami/postgresql only has amd64, breaks on Graviton
+  # Must use bitnami image (not official postgres) for bitnami subchart compatibility
   set {
     name  = "postgresql.image.registry"
-    value = "public.ecr.aws"
+    value = "docker.io"
   }
 
   set {
@@ -199,6 +202,13 @@ resource "helm_release" "litellm" {
   set_sensitive {
     name  = "postgresql.auth.postgres-password"
     value = random_password.db_admin_password.result
+  }
+
+  # PostgreSQL must use EBS (block storage), not EFS (NFS).
+  # NFS does not support the fsync/file locking PostgreSQL requires.
+  set {
+    name  = "postgresql.primary.persistence.storageClass"
+    value = "ebs-sc"
   }
 
   # ------------------------------------------------------------------
