@@ -17,15 +17,7 @@ resource "random_password" "master_key" {
   special = false
 }
 
-resource "random_password" "db_password" {
-  length  = 32
-  special = false
-}
 
-resource "random_password" "db_admin_password" {
-  length  = 32
-  special = false
-}
 
 ################################################################################
 # Namespace + Service Account
@@ -148,67 +140,15 @@ resource "helm_release" "litellm" {
     value = "sk-${random_password.master_key.result}"
   }
 
-  # ------------------------------------------------------------------
-  # PostgreSQL backend (bitnami sub-chart, deployed alongside LiteLLM)
-  # ------------------------------------------------------------------
+  # No DB backend — read models from static config (simpler, no PostgreSQL)
   set {
     name  = "db.deployStandalone"
-    value = "true"
+    value = "false"
   }
 
   set {
     name  = "envVars.STORE_MODEL_IN_DB"
-    value = "False"  # Always read models from static config, not DB
-  }
-
-  set {
-    name  = "proxy_config.general_settings.database_url"
-    value = "os.environ/DATABASE_URL"
-  }
-
-  set {
-    name  = "db.url"
-    value = "postgresql://$(DATABASE_USERNAME):$(DATABASE_PASSWORD)@$(DATABASE_HOST)/$(DATABASE_NAME)"
-  }
-
-  set {
-    name  = "global.security.allowInsecureImages"
-    value = "true"
-  }
-
-  # PostgreSQL image — Docker Hub bitnami has multi-arch (amd64+arm64)
-  # public.ecr.aws/bitnami/postgresql only has amd64, breaks on Graviton
-  # Must use bitnami image (not official postgres) for bitnami subchart compatibility
-  set {
-    name  = "postgresql.image.registry"
-    value = "docker.io"
-  }
-
-  set {
-    name  = "postgresql.image.repository"
-    value = "bitnami/postgresql"
-  }
-
-  set {
-    name  = "postgresql.image.tag"
-    value = "latest"
-  }
-
-  set_sensitive {
-    name  = "postgresql.auth.password"
-    value = random_password.db_password.result
-  }
-
-  set_sensitive {
-    name  = "postgresql.auth.postgres-password"
-    value = random_password.db_admin_password.result
-  }
-
-  # PostgreSQL must use EBS (block storage), not EFS (NFS).
-  # NFS does not support the fsync/file locking PostgreSQL requires.
-  set {
-    name  = "postgresql.primary.persistence.storageClass"
-    value = "ebs-sc"
+    value = "False"
   }
 
   # ------------------------------------------------------------------
