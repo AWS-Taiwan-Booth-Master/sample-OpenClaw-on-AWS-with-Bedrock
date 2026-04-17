@@ -17,6 +17,18 @@ resource "random_password" "master_key" {
   special = false
 }
 
+resource "random_password" "db_password" {
+  count   = var.enable_db ? 1 : 0
+  length  = 32
+  special = false
+}
+
+resource "random_password" "db_admin_password" {
+  count   = var.enable_db ? 1 : 0
+  length  = 32
+  special = false
+}
+
 
 
 ################################################################################
@@ -121,15 +133,10 @@ resource "helm_release" "litellm" {
     value = kubernetes_service_account_v1.litellm.metadata[0].name
   }
 
-  # Container image — upstream: docker.litellm.ai/berriai/litellm
+  # Container image — controlled by enable_db toggle (see DB mode section below)
   set {
     name  = "image.tag"
     value = "main-latest"
-  }
-
-  set {
-    name  = "image.repository"
-    value = var.ecr_host != "" ? "${var.ecr_host}/berriai/litellm" : "docker.litellm.ai/berriai/litellm"
   }
 
   # ------------------------------------------------------------------
@@ -140,15 +147,61 @@ resource "helm_release" "litellm" {
     value = "sk-${random_password.master_key.result}"
   }
 
-  # No DB backend — read models from static config (simpler, no PostgreSQL)
+  # ------------------------------------------------------------------
+  # DB mode toggle
+  # enable_db=false (default): stateless config-only, lighter image, no PG
+  # enable_db=true: PostgreSQL sidecar, virtual key management enabled
+  # ------------------------------------------------------------------
+  set {
+    name  = "image.repository"
+    value = var.enable_db ? (var.ecr_host != "" ? "${var.ecr_host}/berriai/litellm-database" : "ghcr.io/berriai/litellm-database") : (var.ecr_host != "" ? "${var.ecr_host}/berriai/litellm" : "ghcr.io/berriai/litellm")
+  }
+
   set {
     name  = "db.deployStandalone"
+    value = var.enable_db ? "true" : "false"
+  }
+
+  set {
+    name  = "db.useExisting"
     value = "false"
   }
 
   set {
     name  = "envVars.STORE_MODEL_IN_DB"
-    value = "False"
+    value = var.enable_db ? "True" : "False"
+  }
+
+  dynamic "set_sensitive" {
+    for_each = var.enable_db ? [1] : []
+    content {
+      name  = "postgresql.auth.password"
+      value = random_password.db_password[0].result
+    }
+  }
+
+  dynamic "set_sensitive" {
+    for_each = var.enable_db ? [1] : []
+    content {
+      name  = "postgresql.auth.postgres-password"
+      value = random_password.db_admin_password[0].result
+    }
+  }
+
+  dynamic "set" {
+    for_each = var.enable_db ? [1] : []
+    content {
+      name  = "postgresql.primary.persistence.storageClass"
+      value = "ebs-sc"
+    }
+  }
+
+  dynamic "set" {
+    for_each = var.enable_db ? [1] : []
+    content {
+      name  = "global.security.allowInsecureImages"
+      value = "true"
+    }
   }
 
   # ------------------------------------------------------------------
