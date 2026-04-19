@@ -171,9 +171,58 @@ sudo -H -u ubuntu XDG_RUNTIME_DIR=/run/user/1000 systemctl --user daemon-reload 
 sudo -H -u ubuntu XDG_RUNTIME_DIR=/run/user/1000 systemctl --user restart openclaw-gateway 2>/dev/null || true
 echo "  openclaw-gateway restarted"
 
+# Configure Slack from env when both Socket Mode tokens are present.
+# This keeps Slack setup reproducible across redeploys instead of relying on
+# one-time UI clicks on the gateway.
+if [ -n "${SLACK_BOT_TOKEN:-}" ] && [ -n "${SLACK_APP_TOKEN:-}" ]; then
+  echo "  Configuring Slack channel from env"
+  sudo -H -u ubuntu bash -lc '
+    export HOME=/home/ubuntu
+    export XDG_RUNTIME_DIR=/run/user/1000
+    source /home/ubuntu/.nvm/nvm.sh
+    set -o allexport
+    . /etc/openclaw/env
+    set +o allexport
+    openclaw channels add --channel slack --bot-token "$SLACK_BOT_TOKEN" --app-token "$SLACK_APP_TOKEN"
+  ' || echo "  WARN: Slack channel configuration failed"
+fi
+
+# ── Phase 6: Mount EFS for Admin Console access to always-on workspaces ────
+
+echo ">>> Phase 6: Mounting EFS..."
+STACK_NAME="${STACK_NAME:-openclaw}"
+REGION="${AWS_REGION:-us-east-1}"
+
+# Get EFS ID from CloudFormation outputs
+EFS_ID=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" \
+  --query "Stacks[0].Outputs[?OutputKey=='AlwaysOnEFSId'].OutputValue" --output text 2>/dev/null || echo "")
+
+if [ -n "$EFS_ID" ] && [ "$EFS_ID" != "None" ]; then
+  # Install EFS mount helper (amazon-efs-utils)
+  apt-get install -y amazon-efs-utils 2>/dev/null || pip install botocore 2>/dev/null || true
+
+  mkdir -p /mnt/efs
+  # Check if already mounted
+  if ! mountpoint -q /mnt/efs 2>/dev/null; then
+    mount -t efs -o tls "$EFS_ID":/ /mnt/efs 2>/dev/null || \
+    mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 \
+      "$EFS_ID.efs.$REGION.amazonaws.com":/ /mnt/efs 2>/dev/null || \
+    echo "  WARN: EFS mount failed (non-fatal, admin workspace browsing unavailable)"
+  fi
+  # Add to fstab for persistence across reboots
+  if ! grep -q "$EFS_ID" /etc/fstab 2>/dev/null; then
+    echo "$EFS_ID:/ /mnt/efs efs _netdev,tls 0 0" >> /etc/fstab 2>/dev/null || \
+    echo "$EFS_ID.efs.$REGION.amazonaws.com:/ /mnt/efs nfs4 nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,_netdev 0 0" >> /etc/fstab
+  fi
+  echo "  EFS $EFS_ID mounted at /mnt/efs"
+else
+  echo "  WARN: EFS ID not found in stack outputs (always-on workspace browsing unavailable)"
+fi
+
 echo ""
 echo "══════════════════════════════════════════════════"
 echo "  EC2 Setup Complete!"
 echo "  Services: openclaw-admin, tenant-router, bedrock-proxy-h2"
+echo "  EFS: ${EFS_ID:-not mounted}"
 echo "══════════════════════════════════════════════════"
 echo "EC2_SETUP_COMPLETE"

@@ -68,6 +68,11 @@ else
     mkdir -p "$WORKSPACE" "$WORKSPACE/memory" "$WORKSPACE/skills"
 fi
 
+# Clean output/ directory on every cold start.
+# Output files are persisted in S3 by the watchdog sync — no need to keep old ones locally.
+rm -rf "$WORKSPACE/output" 2>/dev/null
+mkdir -p "$WORKSPACE/output"
+
 # Symlink for backward compat (skill_loader, watchdog sync)
 ln -sfn "$WORKSPACE" /tmp/workspace
 echo "$TENANT_ID" > /tmp/tenant_id
@@ -85,7 +90,7 @@ GATEWAY_TOKEN=$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')
 export OPENCLAW_GATEWAY_TOKEN="$GATEWAY_TOKEN"
 
 sed -e "s|\${AWS_REGION}|${AWS_REGION}|g" \
-    -e "s|\${BEDROCK_MODEL_ID}|${BEDROCK_MODEL_ID:-global.amazon.nova-2-lite-v1:0}|g" \
+    -e "s|\${BEDROCK_MODEL_ID}|${BEDROCK_MODEL_ID:-global.anthropic.claude-sonnet-4-5-20250929-v1:0}|g" \
     /app/openclaw.json > "$OPENCLAW_CONFIG_DIR/openclaw.json"
 echo "[entrypoint] openclaw.json written to $OPENCLAW_CONFIG_DIR/openclaw.json"
 
@@ -157,7 +162,54 @@ with open(config_path, 'w') as f:
 fi
 
 # =============================================================================
-# Step 0.6: Start OpenClaw Gateway — native session management + memory
+# Step 0.6.1: Auto-connect IM channels from DynamoDB credentials (Fargate per-employee)
+# If EMP#.imCredentials exists in DynamoDB, run `openclaw channels add` for each.
+# EFS persists openclaw.json so this only matters on FIRST boot or after credential change.
+# =============================================================================
+if [ "$EFS_MODE" = "true" ] && [ "$BASE_TENANT_ID" != "unknown" ]; then
+    python3 -c "
+import json, os, subprocess, sys
+try:
+    import boto3
+    ddb_region = os.environ.get('DYNAMODB_REGION', os.environ.get('AWS_REGION', 'us-east-1'))
+    ddb_table = os.environ.get('DYNAMODB_TABLE', os.environ.get('STACK_NAME', 'openclaw'))
+    emp_id = '$BASE_TENANT_ID'
+    ddb = boto3.resource('dynamodb', region_name=ddb_region)
+    table = ddb.Table(ddb_table)
+    resp = table.get_item(Key={'PK': 'ORG#acme', 'SK': f'EMP#{emp_id}'})
+    creds = resp.get('Item', {}).get('imCredentials', {})
+    if not creds:
+        print('[entrypoint] No IM credentials in DynamoDB for ' + emp_id)
+        sys.exit(0)
+    openclaw = '/usr/local/bin/openclaw'
+    env = os.environ.copy()
+    env['HOME'] = os.environ.get('HOME', '/root')
+    env['PATH'] = '/usr/local/bin:/usr/bin:/bin:' + env.get('PATH', '')
+    for channel, data in creds.items():
+        if not data or not isinstance(data, dict):
+            continue
+        cmd = [openclaw, 'channels', 'add', '--channel', channel]
+        for k, v in data.items():
+            if k in ('connectedAt',):
+                continue
+            flag = '--' + k.replace('_', '-')
+            if k == 'appId': flag = '--app-id'
+            elif k == 'appSecret': flag = '--app-secret'
+            elif k == 'botToken': flag = '--bot-token'
+            elif k == 'appToken': flag = '--app-token'
+            cmd.extend([flag, str(v)])
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15, env=env)
+        if r.returncode == 0:
+            print(f'[entrypoint] IM auto-connect: {channel} OK')
+        else:
+            print(f'[entrypoint] IM auto-connect: {channel} FAILED ({r.stderr[:100]})')
+except Exception as e:
+    print(f'[entrypoint] IM auto-connect failed (non-fatal): {e}')
+" 2>&1
+fi
+
+# =============================================================================
+# Step 0.7: Start OpenClaw Gateway — native session management + memory
 # Gateway must run BEFORE server.py so OpenClaw agent CLI can connect to it.
 # Without Gateway, OpenClaw falls back to embedded mode (no memory compaction).
 # With bot tokens injected above, Gateway auto-connects to IM channels.
@@ -166,10 +218,20 @@ openclaw gateway --port 18789 > /tmp/openclaw-gateway.log 2>&1 &
 GATEWAY_PID=$!
 echo "[entrypoint] OpenClaw Gateway PID=${GATEWAY_PID}"
 
-# Wait up to 30s for Gateway to start listening
-# Use curl instead of ss (ss may not exist in slim images)
+# Wait for Gateway to start — but don't block server.py startup.
+# AgentCore: wait up to 30s (server.py starts after this, healthcheck needs it fast)
+# Fargate:   wait only 5s, then continue (server.py starts immediately for health check,
+#            Gateway continues starting in background — tools available within ~25s)
+if [ "$EFS_MODE" = "true" ]; then
+    GATEWAY_WAIT=5
+    echo "[entrypoint] Fargate mode: waiting ${GATEWAY_WAIT}s for Gateway (non-blocking)"
+else
+    GATEWAY_WAIT=30
+    echo "[entrypoint] AgentCore mode: waiting ${GATEWAY_WAIT}s for Gateway"
+fi
+
 GATEWAY_READY=false
-for i in $(seq 1 30); do
+for i in $(seq 1 $GATEWAY_WAIT); do
     if curl -sf --connect-timeout 1 http://127.0.0.1:18789/__openclaw/control-ui-config.json >/dev/null 2>&1; then
         echo "[entrypoint] Gateway ready on port 18789 (${i}s)"
         GATEWAY_READY=true
@@ -178,7 +240,11 @@ for i in $(seq 1 30); do
     sleep 1
 done
 if [ "$GATEWAY_READY" = "false" ]; then
-    echo "[entrypoint] WARNING: Gateway not ready after 30s (may still be starting)"
+    if [ "$EFS_MODE" = "true" ]; then
+        echo "[entrypoint] Gateway still starting (Fargate: will be ready for next request)"
+    else
+        echo "[entrypoint] WARNING: Gateway not ready after ${GATEWAY_WAIT}s (tools may be unavailable)"
+    fi
 fi
 
 # Auto-pair Control UI and store the dashboard URL token in SSM.
@@ -218,6 +284,7 @@ fi
 # =============================================================================
 export OPENCLAW_WORKSPACE="$WORKSPACE"
 export OPENCLAW_SKIP_ONBOARDING=1
+export OPENCLAW_SKIP_CRON=1  # Disable built-in cron — EventBridge handles scheduling
 
 python /app/server.py &
 SERVER_PID=$!
@@ -228,7 +295,7 @@ echo "[entrypoint] server.py PID=${SERVER_PID}"
 # =============================================================================
 (
     echo "[bg] Pulling workspace from S3..."
-    aws s3 sync "${S3_BASE}/workspace/" "$WORKSPACE/" --quiet 2>/dev/null || true
+    aws s3 sync "${S3_BASE}/workspace/" "$WORKSPACE/" --exclude "output/*" --quiet 2>/dev/null || true
 
     # Detect shared agent: if tenant_id starts with "shared_" or matches a shared agent pattern
     # The tenant router sets SHARED_AGENT_ID env var for shared agents
@@ -302,7 +369,8 @@ echo "[entrypoint] server.py PID=${SERVER_PID}"
                 aws s3 sync "$WORKSPACE/" "$SYNC_TARGET" \
                     --exclude "node_modules/*" --exclude "skills/_shared/*" --exclude "skills/*" \
                     --exclude "SOUL.md" --exclude "AGENTS.md" --exclude "TOOLS.md" \
-                    --exclude "IDENTITY.md" --exclude ".personal_soul_backup.md" \
+                    --exclude "IDENTITY.md" --exclude "SESSION_CONTEXT.md" --exclude "CHANNELS.md" \
+                    --exclude ".personal_soul_backup.md" \
                     --exclude "knowledge/*" \
                     --size-only --region "$AWS_REGION" \
                     --quiet 2>/dev/null && echo "[watchdog] Synced to ${SYNC_TARGET}" || true
@@ -332,6 +400,13 @@ cleanup() {
             --name "/openclaw/${STACK_NAME}/always-on/${SHARED_AGENT_ID}/endpoint" \
             --region "$AWS_REGION" 2>/dev/null || true
         echo "[entrypoint] SSM endpoint deregistered for ${SHARED_AGENT_ID}"
+    fi
+    # Also deregister tier endpoint if FARGATE_TIER is set
+    if [ -n "${FARGATE_TIER:-}" ]; then
+        aws ssm delete-parameter \
+            --name "/openclaw/${STACK_NAME}/fargate/tier-${FARGATE_TIER}/endpoint" \
+            --region "$AWS_REGION" 2>/dev/null || true
+        echo "[entrypoint] Fargate tier endpoint deregistered: tier-${FARGATE_TIER}"
     fi
 
     # Step 1: Stop server first — no new requests during shutdown
@@ -394,6 +469,7 @@ trap cleanup SIGTERM SIGINT
 # Register ECS Fargate task endpoint in SSM once server is healthy.
 # Runs in the background so it doesn't block the main process.
 # The Tenant Router reads this SSM parameter to route requests to this task.
+# Supports both per-agent endpoints (SHARED_AGENT_ID) and per-tier endpoints (FARGATE_TIER).
 if [ -n "${SHARED_AGENT_ID:-}" ] && [ -n "${ECS_CONTAINER_METADATA_URI_V4:-}" ]; then
 (
     # Wait up to 15s for server.py to be ready
@@ -426,12 +502,22 @@ except Exception:
     done
     if [ -n "$TASK_IP" ]; then
         ENDPOINT="http://${TASK_IP}:8080"
+        # Register per-agent endpoint (always-on dedicated agents)
         aws ssm put-parameter \
             --name "/openclaw/${STACK_NAME}/always-on/${SHARED_AGENT_ID}/endpoint" \
             --value "$ENDPOINT" --type "String" --overwrite \
             --region "$AWS_REGION" 2>/dev/null \
             && echo "[entrypoint] ECS endpoint registered: $ENDPOINT" \
             || echo "[entrypoint] WARNING: SSM endpoint registration failed"
+        # Also register per-tier endpoint if FARGATE_TIER is set (Fargate-first mode)
+        if [ -n "${FARGATE_TIER:-}" ]; then
+            aws ssm put-parameter \
+                --name "/openclaw/${STACK_NAME}/fargate/tier-${FARGATE_TIER}/endpoint" \
+                --value "$ENDPOINT" --type "String" --overwrite \
+                --region "$AWS_REGION" 2>/dev/null \
+                && echo "[entrypoint] Fargate tier endpoint registered: tier-${FARGATE_TIER} → $ENDPOINT" \
+                || echo "[entrypoint] WARNING: Fargate tier endpoint registration failed"
+        fi
     else
         echo "[entrypoint] WARNING: Could not determine ECS task IP"
     fi

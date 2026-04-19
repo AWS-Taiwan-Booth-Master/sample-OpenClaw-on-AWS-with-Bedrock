@@ -230,8 +230,32 @@ export interface RuntimeEvent {
 export function useRuntimeEvents(minutes: number = 30) {
   return useQuery<{ events: RuntimeEvent[]; summary: Record<string, number> }>({
     queryKey: ['runtime-events', minutes],
-    queryFn: () => api.get(`/monitor/runtime-events?minutes=${minutes}`),
+    queryFn: () => api.get(`/monitor/events?minutes=${minutes}`),
     refetchInterval: 15_000,
+  });
+}
+
+export function useMonitorActionItems() {
+  return useQuery<{ items: any[] }>({
+    queryKey: ['monitor-action-items'],
+    queryFn: () => api.get('/monitor/action-items'),
+    refetchInterval: 30_000,
+  });
+}
+
+export function useMonitorSystemStatus() {
+  return useQuery<{ agents: any; sessions: any; system: any }>({
+    queryKey: ['monitor-system-status'],
+    queryFn: () => api.get('/monitor/system-status'),
+    refetchInterval: 30_000,
+  });
+}
+
+export function useMonitorAgentActivity() {
+  return useQuery<{ agents: any[] }>({
+    queryKey: ['monitor-agent-activity'],
+    queryFn: () => api.get('/monitor/agent-activity'),
+    refetchInterval: 30_000,
   });
 }
 
@@ -265,6 +289,26 @@ export function useRunAuditScan() {
   return useMutation({
     mutationFn: () => api.post('/audit/run-scan', {}),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['audit-insights'] }),
+  });
+}
+
+export function useAuditReviews() {
+  return useQuery<{ reviews: any[] }>({
+    queryKey: ['audit-reviews'],
+    queryFn: () => api.get('/audit/review-queue'),
+  });
+}
+
+export function useAuditCompliance() {
+  return useQuery<any>({
+    queryKey: ['audit-compliance'],
+    queryFn: () => api.get('/audit/compliance-stats'),
+  });
+}
+
+export function useAuditAnalyze() {
+  return useMutation<any, Error, { entryId: string }>({
+    mutationFn: (body) => api.post('/audit/analyze', body),
   });
 }
 
@@ -302,7 +346,7 @@ export function useDashboard() {
 // === Usage (multi-dimension) ===
 
 export function useUsageSummary() {
-  return useQuery<{ totalInputTokens: number; totalOutputTokens: number; totalCost: number; totalRequests: number; tenantCount: number; chatgptEquivalent: number }>({
+  return useQuery<{ totalInputTokens: number; totalOutputTokens: number; totalCost: number; totalRequests: number; tenantCount: number }>({
     queryKey: ['usage-summary'],
     queryFn: () => api.get('/usage/summary'),
   });
@@ -341,6 +385,31 @@ export function useUsageBudgets() {
   return useQuery<{ department: string; budget: number; used: number; projected: number; status: string }[]>({
     queryKey: ['usage-budgets'],
     queryFn: () => api.get('/usage/budgets'),
+  });
+}
+
+export function useMyBudget(empId: string) {
+  return useQuery<{ budget: number; used: number; remaining: number; source: string; projected: number }>({
+    queryKey: ['my-budget', empId],
+    queryFn: () => api.get(`/usage/my-budget?emp_id=${empId}`),
+    enabled: !!empId,
+  });
+}
+
+export function useDepartmentBudget(deptName: string) {
+  return useQuery<{ department: string; budget: number; used: number; projected: number; members: any[] }>({
+    queryKey: ['dept-budget', deptName],
+    queryFn: () => api.get(`/usage/department-budget?department=${encodeURIComponent(deptName)}`),
+    enabled: !!deptName,
+  });
+}
+
+export function useUpdateBudgets() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { global?: number; departments?: Record<string, number>; employees?: Record<string, number> }) =>
+      api.put('/usage/budgets', data),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['usage-budgets'] }),
   });
 }
 
@@ -446,10 +515,10 @@ export function useSaveSoul() {
 
 // === Workspace file operations ===
 
-export function useWorkspaceTree(agentId: string) {
+export function useWorkspaceTree(agentId: string, agentType?: 'serverless' | 'always-on') {
   return useQuery({
-    queryKey: ['workspace-tree', agentId],
-    queryFn: () => api.get(`/workspace/tree?agent_id=${agentId}`),
+    queryKey: ['workspace-tree', agentId, agentType],
+    queryFn: () => api.get(`/workspace/tree?agent_id=${agentId}${agentType ? `&agent_type=${agentType}` : ''}`),
     enabled: !!agentId,
   });
 }
@@ -529,6 +598,59 @@ export function useUnassignSkill() {
 }
 
 
+// === Skill Submission + Review ===
+
+export function usePendingSkills() {
+  return useQuery<any[]>({
+    queryKey: ['pending-skills'],
+    queryFn: () => api.get('/tools-skills/pending'),
+  });
+}
+
+export function useSubmitSkill() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { name: string; description: string; category: string; toolJs: string; setupGuide?: string; requiredEnv?: string[]; requiredTools?: string[] }) =>
+      api.post<{ submitted: boolean; skillName: string }>('/portal/skills/submit', data),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['pending-skills'] }); qc.invalidateQueries({ queryKey: ['skills'] }); },
+  });
+}
+
+export function useRequestSkill() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ skillName, reason }: { skillName: string; reason?: string }) =>
+      api.post<{ requested: boolean }>(`/portal/skills/${skillName}/request`, { reason }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['approvals'] }),
+  });
+}
+
+export function useReviewSkill() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ skillName, action, reason }: { skillName: string; action: 'approve' | 'reject'; reason?: string }) =>
+      api.post<{ action: string }>(`/tools-skills/${skillName}/review`, { action, reason }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['pending-skills'] }); qc.invalidateQueries({ queryKey: ['skills'] }); },
+  });
+}
+
+export function useSkillCode(skillName: string, source: string = 'shared') {
+  return useQuery<{ toolJs: string; manifest: any; setupGuide: string }>({
+    queryKey: ['skill-code', skillName, source],
+    queryFn: () => api.get(`/tools-skills/${skillName}/code?source=${source}`),
+    enabled: !!skillName,
+  });
+}
+
+export function useApproveSkillInstall() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ skillName, approvalId }: { skillName: string; approvalId: string }) =>
+      api.post<{ approved: boolean }>(`/tools-skills/${skillName}/approve-install`, { approvalId }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['approvals'] }); qc.invalidateQueries({ queryKey: ['employees'] }); },
+  });
+}
+
 // === Approvals ===
 
 export interface ApprovalRequest {
@@ -601,6 +723,23 @@ export function usePlaygroundProfiles() {
   return useQuery<Record<string, { role: string; tools: string[]; planA: string; planE: string }>>({
     queryKey: ['playground-profiles'],
     queryFn: () => api.get('/playground/profiles'),
+  });
+}
+
+export function usePlaygroundPipeline(empId: string) {
+  return useQuery<any>({
+    queryKey: ['playground-pipeline', empId],
+    queryFn: () => api.get(`/playground/pipeline/${empId}`),
+    enabled: !!empId,
+  });
+}
+
+export function usePlaygroundEvents(tenantId: string, seconds: number = 60) {
+  return useQuery<{ events: any[]; count: number }>({
+    queryKey: ['playground-events', tenantId, seconds],
+    queryFn: () => api.get(`/playground/events?tenant_id=${tenantId}&seconds=${seconds}`),
+    enabled: !!tenantId,
+    refetchInterval: 5_000,
   });
 }
 
@@ -779,8 +918,15 @@ export function useChangeAdminPassword() {
   });
 }
 
+export function useChangePassword() {
+  return useMutation({
+    mutationFn: (data: { currentPassword: string; newPassword: string }) =>
+      api.post<{ token: string; changed: boolean }>('/auth/change-password', data),
+  });
+}
+
 export function useAdminAssistant() {
-  return useQuery<{ model: string; allowedCommands: string[]; systemPromptExtra: string }>({
+  return useQuery<{ model: string; systemPrompt: string; maxHistoryTurns: number; maxTokens: number }>({
     queryKey: ['admin-assistant-config'],
     queryFn: () => api.get('/settings/admin-assistant'),
   });
@@ -789,9 +935,63 @@ export function useAdminAssistant() {
 export function useUpdateAdminAssistant() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (data: { model: string; allowedCommands: string[]; systemPromptExtra: string }) =>
+    mutationFn: (data: { model?: string; systemPrompt?: string; maxHistoryTurns?: number; maxTokens?: number }) =>
       api.put('/settings/admin-assistant', data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-assistant-config'] }),
+  });
+}
+
+export function usePlatformAccess() {
+  return useQuery<{ ssmCommand: string; instanceId: string; region: string; portForwardCommand: string }>({
+    queryKey: ['platform-access'],
+    queryFn: () => api.get('/settings/platform-access'),
+  });
+}
+
+export function usePlatformLogs(service?: string, lines?: number) {
+  const qs = new URLSearchParams();
+  if (service) qs.set('service', service);
+  if (lines) qs.set('lines', String(lines));
+  return useQuery<{ logs: string; service: string; lines: number }>({
+    queryKey: ['platform-logs', service, lines],
+    queryFn: () => api.get(`/settings/platform-logs?${qs}`),
+    enabled: false,
+  });
+}
+
+export function useAdminHistory() {
+  return useQuery<{ history: any[] }>({
+    queryKey: ['admin-history'],
+    queryFn: () => api.get('/settings/admin-assistant/history'),
+  });
+}
+
+export function useClearAdminHistory() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.del('/settings/admin-assistant/history'),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['admin-history'] }),
+  });
+}
+
+export function useRestartService() {
+  return useMutation({
+    mutationFn: (service: string) => api.post('/settings/restart-service', { service }),
+  });
+}
+
+export function useIMChannelHealth() {
+  return useQuery<{ lastActivity: Record<string, string>; messagesLast24h: Record<string, number> }>({
+    queryKey: ['im-channel-health'],
+    queryFn: () => api.get('/admin/im-channels/health'),
+    refetchInterval: 60_000,
+  });
+}
+
+export function useIMEnrollment() {
+  return useQuery<{ totalWithAgent: number; bound: number; unbound: number; unboundEmployees: any[]; multiChannel: any[] }>({
+    queryKey: ['im-enrollment'],
+    queryFn: () => api.get('/admin/im-channels/enrollment'),
   });
 }
 
@@ -995,5 +1195,78 @@ export function useSetEmployeeKBs() {
     mutationFn: ({ empId, kbIds }: { empId: string; kbIds: string[] }) =>
       api.put(`/settings/kb-assignments/employee/${empId}`, { kbIds }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['kb-assignments'] }),
+  });
+}
+
+// ── Always-On Agent Management ───────────────────────────────────────────
+
+export function useAlwaysOnStatus(empId: string) {
+  return useQuery({
+    queryKey: ['always-on-status', empId],
+    queryFn: () => api.get(`/agents/${empId}/always-on/status`),
+    enabled: !!empId,
+    refetchInterval: (query) => {
+      const data = query.state.data as any;
+      // Poll faster (5s) when container is starting/stopping, slower (30s) when stable
+      const status = data?.ecsStatus || data?.status;
+      return status === 'starting' || status === 'stopping' || status === 'PROVISIONING' ? 5000 : 30000;
+    },
+  });
+}
+
+export function useAlwaysOnChannels(empId: string) {
+  return useQuery({
+    queryKey: ['always-on-channels', empId],
+    queryFn: () => api.get(`/agents/${empId}/always-on/channels`),
+    enabled: !!empId,
+  });
+}
+
+export function useEnableAlwaysOn() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ empId, enable }: { empId: string; enable: boolean }) =>
+      api.put(`/agents/${empId}/always-on`, { enable }),
+    onSuccess: (_, { empId }) => {
+      qc.invalidateQueries({ queryKey: ['always-on-status', empId] });
+      qc.invalidateQueries({ queryKey: ['employees'] });
+      qc.invalidateQueries({ queryKey: ['agents'] });
+    },
+  });
+}
+
+export function useDisconnectChannel() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ empId, channel, reason }: { empId: string; channel: string; reason?: string }) =>
+      api.del(`/agents/${empId}/always-on/channels/${channel}${reason ? `?reason=${encodeURIComponent(reason)}` : ''}`),
+    onSuccess: (_, { empId }) => {
+      qc.invalidateQueries({ queryKey: ['always-on-channels', empId] });
+    },
+  });
+}
+
+export function useFargateOverview() {
+  return useQuery({
+    queryKey: ['fargate-overview'],
+    queryFn: () => api.get('/security/fargate/overview'),
+    refetchInterval: 30000,
+  });
+}
+
+export function useWorkspaceFiles(empId: string, agentType: string = 'serverless') {
+  return useQuery({
+    queryKey: ['workspace-files', empId, agentType],
+    queryFn: () => api.get(`/workspace/${empId}/files?agent_type=${agentType}`),
+    enabled: !!empId,
+  });
+}
+
+export function useSetIMPlatforms() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ posId, platforms }: { posId: string; platforms: string[] }) =>
+      api.put(`/security/positions/${posId}/im-platforms`, { allowedIMPlatforms: platforms }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['positions'] }),
   });
 }

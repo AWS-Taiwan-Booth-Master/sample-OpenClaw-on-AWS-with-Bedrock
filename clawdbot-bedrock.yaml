@@ -19,6 +19,7 @@ Metadata:
           default: "Network Configuration"
         Parameters:
           - CreateVPCEndpoints
+          - EnableMonitoring
           - AllowedSSHCIDR
 
 Parameters:
@@ -27,6 +28,7 @@ Parameters:
     Default: "global.anthropic.claude-sonnet-4-6"
     Description: "Bedrock model ID - Claude Sonnet 4.6 offers best balance of capability and cost"
     AllowedValues:
+      - "global.anthropic.claude-opus-4-7"
       - "global.anthropic.claude-sonnet-4-6"
       - "global.anthropic.claude-opus-4-6-v1"
       - "global.amazon.nova-2-lite-v1:0"
@@ -42,7 +44,7 @@ Parameters:
   InstanceType:
     Type: String
     Default: "c7g.large"
-    Description: "Graviton (ARM) recommended for 20-40% better price-performance. x86 also supported."
+    Description: "Graviton (ARM) recommended. c7g = compute-optimized (recommended, 2 vCPU for Node.js + sandbox). r7g/r6g = memory-optimized. t4g = burstable."
     AllowedValues:
       - "t4g.small"
       - "t4g.medium"
@@ -52,10 +54,18 @@ Parameters:
       - "c6g.xlarge"
       - "c7g.large"
       - "c7g.xlarge"
+      - "r6g.medium"
+      - "r6g.large"
+      - "r6g.xlarge"
+      - "r7g.medium"
+      - "r7g.large"
+      - "r7g.xlarge"
       - "t3.small"
       - "t3.medium"
       - "t3.large"
       - "c5.xlarge"
+      - "r5.large"
+      - "r5.xlarge"
 
   KeyPairName:
     Type: String
@@ -82,12 +92,21 @@ Parameters:
 
   OpenClawVersion:
     Type: String
-    Default: "2026.3.24"
+    Default: "latest"
     AllowedValues:
       - "2026.3.24"
       - "2026.4.5"
+      - "2026.4.15"
       - "latest"
-    Description: "OpenClaw version. 2026.3.24 (default, no model approval needed, WeChat compatible). 2026.4.5+ (auto-discovery, embeddings)."
+    Description: "OpenClaw version. 2026.3.24 (no model approval needed, WeChat compatible). 2026.4.5+ (auto-discovery, embeddings). 2026.4.15+ (Opus 4.7 support). latest (npm latest tag)."
+
+  EnableMonitoring:
+    Type: String
+    Default: "true"
+    Description: "Enable CloudWatch monitoring, health checks, auto-recovery, and log shipping (+~$4/mo)"
+    AllowedValues:
+      - "true"
+      - "false"
 
   EnableDataProtection:
     Type: String
@@ -133,6 +152,7 @@ Conditions:
       - Condition: IsSaEast1
   CreateMantleEndpoint: !And [ Condition: CreateEndpoints, Condition: IsMantleSupportedRegion ]     
   EnableDocker: !Equals [!Ref EnableSandbox, "true"]
+  EnableCW: !Equals [!Ref EnableMonitoring, "true"]
   ProtectData: !Equals [!Ref EnableDataProtection, "true"]
   DeleteData: !Not [!Equals [!Ref EnableDataProtection, "true"]]
 
@@ -143,6 +163,8 @@ Mappings:
     t3.large: { Arch: "amd64" }
     t3.xlarge: { Arch: "amd64" }
     c5.xlarge: { Arch: "amd64" }
+    r5.large: { Arch: "amd64" }
+    r5.xlarge: { Arch: "amd64" }
     t4g.small: { Arch: "arm64" }
     t4g.medium: { Arch: "arm64" }
     t4g.large: { Arch: "arm64" }
@@ -151,6 +173,12 @@ Mappings:
     c6g.xlarge: { Arch: "arm64" }
     c7g.large: { Arch: "arm64" }
     c7g.xlarge: { Arch: "arm64" }
+    r6g.medium: { Arch: "arm64" }
+    r6g.large: { Arch: "arm64" }
+    r6g.xlarge: { Arch: "arm64" }
+    r7g.medium: { Arch: "arm64" }
+    r7g.large: { Arch: "arm64" }
+    r7g.xlarge: { Arch: "arm64" }
 
 
 Resources:
@@ -365,19 +393,20 @@ Resources:
                 Action:
                   - 'bedrock-mantle:*'
                 Resource: '*'
-        - PolicyName: MarketplaceAccessPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: MarketplaceFor3pModels
-                Effect: Allow
-                Action:
-                  - 'aws-marketplace:ViewSubscriptions'
-                  - 'aws-marketplace:Subscribe'
-                Resource: '*'
-                Condition:
-                  StringEquals:
-                    'aws:CalledViaLast': 'bedrock.amazonaws.com'
+        - !If
+          - EnableCW
+          - PolicyName: CloudWatchLogsPolicy
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - 'logs:CreateLogGroup'
+                    - 'logs:CreateLogStream'
+                    - 'logs:PutLogEvents'
+                    - 'logs:DescribeLogStreams'
+                  Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/openclaw/*'
+          - !Ref AWS::NoValue
         - PolicyName: SSMParameterPolicy
           PolicyDocument:
             Version: '2012-10-17'
@@ -664,23 +693,44 @@ Resources:
                       mkfs.ext4 -L openclaw-data "$DATA_DEVICE"
                     fi
                     mkdir -p /data
-                    mount "$DATA_DEVICE" /data || true
+                    if ! mount "$DATA_DEVICE" /data; then
+                      echo "FATAL: failed to mount data volume $DATA_DEVICE at /data"
+                      exit 1
+                    fi
                     grep -q "$DATA_DEVICE" /etc/fstab || \
                       echo "$DATA_DEVICE /data ext4 defaults,nofail 0 2" >> /etc/fstab
                     mkdir -p /data/openclaw
                     chown ubuntu:ubuntu /data/openclaw
-                    # Use bind mount instead of symlink to avoid openclaw symlink security checks
-                    if [ -L /home/ubuntu/.openclaw ]; then rm /home/ubuntu/.openclaw; fi
-                    mkdir -p /home/ubuntu/.openclaw
-                    mount --bind /data/openclaw /home/ubuntu/.openclaw
-                    grep -q '/home/ubuntu/.openclaw' /etc/fstab || echo '/data/openclaw /home/ubuntu/.openclaw none bind 0 0' >> /etc/fstab
+                    # Keep ~/.openclaw symlink for CLI convenience (e.g. 'ls ~/.openclaw').
+                    # Set OPENCLAW_STATE_DIR to the real path so OpenClaw's exec approval
+                    # boundary check never traverses the symlink.
+                    [ -L /home/ubuntu/.openclaw ] || ln -sf /data/openclaw /home/ubuntu/.openclaw
+                    mkdir -p /home/ubuntu/.config/environment.d
+                    echo "OPENCLAW_STATE_DIR=/data/openclaw" >> /home/ubuntu/.config/environment.d/openclaw.conf
+                  else
+                    echo "FATAL: no data volume found — expected an EBS volume attached at /dev/nvme1n1, /dev/xvdf, or /dev/sdf"
+                    exit 1
                   fi
+                  STATE_DIR=/data/openclaw
 
                   # System update
                   echo "[1/9] Updating system..."
                   apt-get update
                   apt-get upgrade -y
                   apt-get install -y unzip curl
+
+                  # Configure swap (2GB) — prevents hard OOM kills on low-memory instances
+                  echo "[1.1/9] Configuring swap..."
+                  if [ ! -f /swapfile ]; then
+                    fallocate -l 2G /swapfile
+                    chmod 600 /swapfile
+                    mkswap /swapfile
+                    swapon /swapfile
+                    echo '/swapfile swap swap defaults 0 0' >> /etc/fstab
+                    echo 'vm.swappiness=10' >> /etc/sysctl.conf
+                    sysctl vm.swappiness=10
+                  fi
+                  echo "Swap configured: $(swapon --show)"
 
                   # Detect region and instance ID (IMDSv2)
                   echo "[*] Detecting instance metadata..."
@@ -739,9 +789,9 @@ Resources:
                   export NVM_DIR="$HOME/.nvm"
                   [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
 
-                  nvm install 22
-                  nvm use 22
-                  nvm alias default 22
+                  nvm install 22.22.0
+                  nvm use 22.22.0
+                  nvm alias default 22.22.0
 
                   npm config set registry https://registry.npmjs.org/
                   OPENCLAW_VERSION="${OpenClawVersion}"
@@ -796,7 +846,17 @@ Resources:
                     echo "export AWS_PROFILE=default"
                     echo "export OPENCLAW_MODEL=${OpenClawModel}"
                     echo "export OPENCLAW_USE_BEDROCK=true"
+                    echo "export OPENCLAW_STATE_DIR=/data/openclaw"
                   } >> /home/ubuntu/.bashrc
+
+                  # Also add to .profile so OPENCLAW_STATE_DIR is available in
+                  # non-interactive login shells (e.g. 'sudo su - ubuntu')
+                  echo "export OPENCLAW_STATE_DIR=/data/openclaw" >> /home/ubuntu/.profile
+                  chown ubuntu:ubuntu /home/ubuntu/.profile
+
+                  # Ensure .config is ubuntu-owned before gateway install runs
+                  mkdir -p /home/ubuntu/.config/systemd/user
+                  chown -R ubuntu:ubuntu /home/ubuntu/.config
 
                   sudo -u ubuntu mkdir -p /home/ubuntu/.config/environment.d
                   sudo -u ubuntu bash -c "{ echo AWS_REGION=$AWS_REGION; echo AWS_DEFAULT_REGION=$AWS_REGION; echo AWS_PROFILE=default; } > /home/ubuntu/.config/environment.d/aws.conf"
@@ -806,12 +866,12 @@ Resources:
 
                   # Configure OpenClaw
                   echo "[8/9] Configuring OpenClaw..."
-                  sudo -u ubuntu mkdir -p /home/ubuntu/.openclaw
+                  sudo -u ubuntu mkdir -p "$STATE_DIR"
 
                   # Write .env for Bedrock IAM auth — survives gateway install/reinstall
                   # OpenClaw 2026.4.5+ uses pi-coding-agent which needs AWS_PROFILE
                   # to discover IAM credentials from EC2 instance profile (IMDS)
-                  sudo -u ubuntu bash -c "printf 'AWS_PROFILE=default\nAWS_REGION=$AWS_REGION\nAWS_DEFAULT_REGION=$AWS_REGION\n' > /home/ubuntu/.openclaw/.env"
+                  sudo -u ubuntu bash -c "printf 'AWS_PROFILE=default\nAWS_REGION=$AWS_REGION\nAWS_DEFAULT_REGION=$AWS_REGION\n' > $STATE_DIR/.env"
 
                   GATEWAY_TOKEN=$(openssl rand -hex 24)
 
@@ -821,15 +881,15 @@ Resources:
                   OPENCLAW_VERSION="${OpenClawVersion}"
                   if [ "$OPENCLAW_VERSION" = "2026.3.24" ]; then
                     echo "Using legacy config (models.providers) for $OPENCLAW_VERSION"
-                    cp /opt/openclaw/openclaw-config-legacy.json /home/ubuntu/.openclaw/openclaw.json
-                    sed -i "s/REGION_PLACEHOLDER/$AWS_REGION/g" /home/ubuntu/.openclaw/openclaw.json
+                    cp /opt/openclaw/openclaw-config-legacy.json "$STATE_DIR/openclaw.json"
+                    sed -i "s/REGION_PLACEHOLDER/$AWS_REGION/g" "$STATE_DIR/openclaw.json"
                   else
                     echo "Using modern config (plugins.discovery) for $OPENCLAW_VERSION"
-                    cp /opt/openclaw/openclaw-config-modern.json /home/ubuntu/.openclaw/openclaw.json
+                    cp /opt/openclaw/openclaw-config-modern.json "$STATE_DIR/openclaw.json"
                   fi
-                  chown ubuntu:ubuntu /home/ubuntu/.openclaw/openclaw.json
-                  sed -i "s/GATEWAY_TOKEN_PLACEHOLDER/$GATEWAY_TOKEN/g" /home/ubuntu/.openclaw/openclaw.json
-                  sed -i "s|MODEL_ID_PLACEHOLDER|${OpenClawModel}|g" /home/ubuntu/.openclaw/openclaw.json
+                  chown ubuntu:ubuntu "$STATE_DIR/openclaw.json"
+                  sed -i "s/GATEWAY_TOKEN_PLACEHOLDER/$GATEWAY_TOKEN/g" "$STATE_DIR/openclaw.json"
+                  sed -i "s|MODEL_ID_PLACEHOLDER|${OpenClawModel}|g" "$STATE_DIR/openclaw.json"
 
                   # Install and start gateway
                   for i in $(seq 1 15); do
@@ -841,8 +901,9 @@ Resources:
                     sleep 2
                   done
 
-                  sudo -H -u ubuntu XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus bash -c '
+                  sudo -H -u ubuntu XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus OPENCLAW_STATE_DIR="$STATE_DIR" bash -c '
                   export HOME=/home/ubuntu
+                  export OPENCLAW_STATE_DIR=$OPENCLAW_STATE_DIR
                   export NVM_DIR="$HOME/.nvm"
                   [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
                   openclaw gateway install || echo "Gateway install failed"
@@ -886,8 +947,8 @@ Resources:
                   '
 
                   # Copy SOUL.md
-                  cp /opt/openclaw/SOUL.md /home/ubuntu/.openclaw/SOUL.md
-                  chown ubuntu:ubuntu /home/ubuntu/.openclaw/SOUL.md
+                  cp /opt/openclaw/SOUL.md "$STATE_DIR/SOUL.md"
+                  chown ubuntu:ubuntu "$STATE_DIR/SOUL.md"
 
                   # Save token to SSM Parameter Store
                   STACK_NAME="${AWS::StackName}"
@@ -900,8 +961,8 @@ Resources:
                   unset GATEWAY_TOKEN
 
                   # Save instance info
-                  echo "$INSTANCE_ID" > /home/ubuntu/.openclaw/instance_id.txt
-                  echo "$AWS_REGION" > /home/ubuntu/.openclaw/region.txt
+                  echo "$INSTANCE_ID" > "$STATE_DIR/instance_id.txt"
+                  echo "$AWS_REGION" > "$STATE_DIR/region.txt"
 
                   # Copy SSM access script
                   cp /opt/openclaw/ssm-portforward.sh /home/ubuntu/ssm-portforward.sh
@@ -909,8 +970,8 @@ Resources:
 
                   # Signal CloudFormation
                   echo "[9/9] Signaling CloudFormation..."
-                  echo "SUCCESS" > /home/ubuntu/.openclaw/setup_status.txt
-                  echo "Setup completed: $(date)" >> /home/ubuntu/.openclaw/setup_status.txt
+                  echo "SUCCESS" > "$STATE_DIR/setup_status.txt"
+                  echo "Setup completed: $(date)" >> "$STATE_DIR/setup_status.txt"
 
                   # Read token back from SSM for cfn-signal (so CloudFormation Outputs can build the access URL)
                   CFN_TOKEN=$(aws ssm get-parameter --name "/openclaw/$STACK_NAME/gateway-token" --with-decryption --query Parameter.Value --output text --region $AWS_REGION 2>/dev/null || echo "TOKEN_UNAVAILABLE")
@@ -927,6 +988,157 @@ Resources:
                   echo "=========================================="
                   echo "OpenClaw installation complete!"
                   echo "=========================================="
+
+                  # Configure journald log limits
+                  echo "[post] Configuring log rotation..."
+                  mkdir -p /etc/systemd/journald.conf.d
+                  cat > /etc/systemd/journald.conf.d/openclaw.conf << 'JOURNALD_CONF'
+                  [Journal]
+                  SystemMaxUse=500M
+                  SystemMaxFileSize=50M
+                  MaxRetentionSec=7day
+                  JOURNALD_CONF
+                  systemctl restart systemd-journald
+
+                  # Configure unattended security upgrades
+                  echo "[post] Configuring unattended upgrades..."
+                  apt-get install -y unattended-upgrades
+                  cat > /etc/apt/apt.conf.d/20auto-upgrades << 'AUTO_UPGRADES'
+                  APT::Periodic::Update-Package-Lists "1";
+                  APT::Periodic::Unattended-Upgrade "1";
+                  APT::Periodic::AutocleanInterval "7";
+                  AUTO_UPGRADES
+
+                  # Run openclaw doctor post-install
+                  echo "[post] Running openclaw doctor..."
+                  sudo -H -u ubuntu XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus bash -c '
+                  export HOME=/home/ubuntu
+                  export NVM_DIR="$HOME/.nvm"
+                  [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+                  openclaw doctor --fix 2>&1 || echo "openclaw doctor completed with warnings"
+                  '
+
+                  # Install health check cron
+                  echo "[post] Installing health check..."
+                  cat > /opt/openclaw/health-check.sh << 'HEALTHCHECK'
+                  #!/bin/bash
+                  # OpenClaw Gateway Health Check
+                  export XDG_RUNTIME_DIR=/run/user/1000
+                  export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+
+                  LOG="/var/log/openclaw-health.log"
+                  MAX_LOG_SIZE=1048576
+
+                  if [ -f "$LOG" ] && [ $(stat -c%s "$LOG" 2>/dev/null || echo 0) -gt $MAX_LOG_SIZE ]; then
+                    mv "$LOG" "$LOG.old"
+                  fi
+
+                  # Check if gateway port is listening
+                  if ! ss -tlnp 2>/dev/null | grep -q ':18789'; then
+                    echo "$(date) UNHEALTHY: Port 18789 not listening, restarting gateway" >> $LOG
+                    sudo -H -u ubuntu bash -c "export XDG_RUNTIME_DIR=/run/user/1000; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus; systemctl --user restart openclaw-gateway.service" 2>>$LOG
+                    sleep 10
+                    if ss -tlnp 2>/dev/null | grep -q ':18789'; then
+                      echo "$(date) RECOVERED: Gateway restarted successfully" >> $LOG
+                    else
+                      echo "$(date) CRITICAL: Gateway failed to restart" >> $LOG
+                    fi
+                    exit 0
+                  fi
+
+                  # Check if gateway HTTP responds (catches deadlocked process)
+                  HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 http://127.0.0.1:18789/ 2>/dev/null || echo "000")
+                  if [ "$HTTP_STATUS" = "000" ]; then
+                    echo "$(date) UNHEALTHY: Gateway not responding to HTTP (status=$HTTP_STATUS), restarting" >> $LOG
+                    sudo -H -u ubuntu bash -c "export XDG_RUNTIME_DIR=/run/user/1000; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus; systemctl --user restart openclaw-gateway.service" 2>>$LOG
+                    sleep 10
+                    echo "$(date) Restarted gateway after HTTP failure" >> $LOG
+                    exit 0
+                  fi
+
+                  # Channel connectivity check (every 30 min = every 6th run of 5-min cron)
+                  COUNTER_FILE="/tmp/openclaw-health-counter"
+                  COUNT=$(cat $COUNTER_FILE 2>/dev/null || echo 0)
+                  COUNT=$((COUNT + 1))
+                  echo $COUNT > $COUNTER_FILE
+
+                  if [ $((COUNT % 6)) -eq 0 ]; then
+                    echo "$(date) Running channel connectivity check..." >> $LOG
+                    CHANNEL_STATUS=$(sudo -H -u ubuntu bash -c '
+                      export HOME=/home/ubuntu
+                      export NVM_DIR="$HOME/.nvm"
+                      [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+                      export XDG_RUNTIME_DIR=/run/user/1000
+                      export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
+                      timeout 30 openclaw status 2>&1
+                    ' || echo "STATUS_FAILED")
+
+                    if echo "$CHANNEL_STATUS" | grep -qi "ERROR\|CRITICAL\|disconnected\|crashed"; then
+                      echo "$(date) CHANNEL_ISSUE: Channel error detected, restarting gateway" >> $LOG
+                      echo "$CHANNEL_STATUS" | grep -i "ERROR\|CRITICAL\|disconnected\|crashed" >> $LOG
+                      sudo -H -u ubuntu bash -c "export XDG_RUNTIME_DIR=/run/user/1000; export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus; systemctl --user restart openclaw-gateway.service" 2>>$LOG
+                      sleep 10
+                      echo "$(date) Restarted gateway after channel error" >> $LOG
+                    else
+                      echo "$(date) HEALTHY: Gateway and channels OK" >> $LOG
+                    fi
+                  fi
+                  HEALTHCHECK
+                  chmod +x /opt/openclaw/health-check.sh
+
+                  # Health check every 5 minutes
+                  (crontab -l 2>/dev/null; echo "*/5 * * * * /opt/openclaw/health-check.sh") | crontab -
+
+                  # Install and configure CloudWatch Agent (conditional)
+                  if [ "${EnableMonitoring}" = "true" ]; then
+                    echo "[post] Installing CloudWatch Agent..."
+                    CW_ARCH=$(uname -m)
+                    if [ "$CW_ARCH" = "aarch64" ]; then
+                      curl -sO "https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/arm64/latest/amazon-cloudwatch-agent.deb"
+                    else
+                      curl -sO "https://amazoncloudwatch-agent.s3.amazonaws.com/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb"
+                    fi
+                    dpkg -i -E amazon-cloudwatch-agent.deb || true
+                    rm -f amazon-cloudwatch-agent.deb
+
+                    cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CWCONFIG'
+                    {
+                      "metrics": {
+                        "namespace": "OpenClaw",
+                        "metrics_collected": {
+                          "mem": { "measurement": ["mem_used_percent"], "metrics_collection_interval": 300 },
+                          "disk": { "measurement": ["disk_used_percent"], "resources": ["/", "/data"], "metrics_collection_interval": 300 },
+                          "swap": { "measurement": ["swap_used_percent"], "metrics_collection_interval": 300 }
+                        },
+                        "append_dimensions": { "InstanceId": "${aws:InstanceId}" }
+                      },
+                      "logs": {
+                        "logs_collected": {
+                          "files": {
+                            "collect_list": [
+                              { "file_path": "/var/log/openclaw-setup.log", "log_group_name": "/openclaw/setup", "log_stream_name": "{instance_id}", "retention_in_days": 30 },
+                              { "file_path": "/var/log/openclaw-health.log", "log_group_name": "/openclaw/health", "log_stream_name": "{instance_id}", "retention_in_days": 14 }
+                            ]
+                          }
+                        }
+                      }
+                    }
+                    CWCONFIG
+                    /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json || echo "CloudWatch Agent config failed"
+                  else
+                    echo "[post] Skipping CloudWatch Agent (EnableMonitoring=false)..."
+                  fi
+
+                  # Add systemd memory limit override for gateway
+                  echo "[post] Configuring systemd memory limits..."
+                  sudo -u ubuntu mkdir -p /home/ubuntu/.config/systemd/user/openclaw-gateway.service.d
+                  cat > /home/ubuntu/.config/systemd/user/openclaw-gateway.service.d/memory-limit.conf << 'MEMLIMIT'
+                  [Service]
+                  MemoryMax=80%
+                  MemoryHigh=70%
+                  MEMLIMIT
+                  chown -R ubuntu:ubuntu /home/ubuntu/.config/systemd/user/openclaw-gateway.service.d
+                  sudo -H -u ubuntu XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus bash -c 'systemctl --user daemon-reload'
               mode: "000755"
               owner: root
               group: root
@@ -942,6 +1154,11 @@ Resources:
       InstanceType: !Ref InstanceType
       KeyName: !If [HasKeyPair, !Ref KeyPairName, !Ref "AWS::NoValue"]
       IamInstanceProfile: !Ref OpenClawInstanceProfile
+      Monitoring: !If [EnableCW, true, false]
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 2
+        HttpEndpoint: enabled
       Volumes:
         - Device: /dev/sdf
           VolumeId: !If [ProtectData, !Ref OpenClawDataVolumeRetained, !Ref OpenClawDataVolumeNotRetained]
@@ -980,6 +1197,45 @@ Resources:
         - Key: Name
           Value: !Sub "${AWS::StackName}-instance"
 
+  # ==================== CloudWatch Alarms ====================
+  EC2AutoRecoveryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EnableCW
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-auto-recovery"
+      AlarmDescription: "Auto-recover EC2 instance on system status check failure"
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed_System
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref OpenClawInstance
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Sub "arn:aws:automate:${AWS::Region}:ec2:recover"
+
+  EC2InstanceStatusAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Condition: EnableCW
+    Properties:
+      AlarmName: !Sub "${AWS::StackName}-instance-status"
+      AlarmDescription: "Reboot on instance status check failure"
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed_Instance
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref OpenClawInstance
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions:
+        - !Sub "arn:aws:automate:${AWS::Region}:ec2:reboot"
+
 Outputs:
   Step1InstallSSMPlugin:
     Description: "STEP 1: Install SSM Session Manager Plugin on your local computer (Option 2: go to EC2 Console > right-click instance > Connect > Session Manager to get a shell, then run 'sudo su - ubuntu && openclaw gateway status' to set up IM channels)"
@@ -1012,14 +1268,19 @@ Outputs:
     Description: "Estimated monthly cost (USD)"
     Value: !Sub
       - |
-        EC2 (${InstanceType}): ~$20-40 (Graviton instances 20% cheaper)
-        EBS (30GB): ~$2.40
+        EC2 (${InstanceType}): ~$50-60 (c7g.large ~$58, Graviton 20% cheaper than x86)
+        EBS (30GB x2): ~$4.80
         VPC Endpoints: ${EndpointCost}
+        Monitoring: ${MonitoringCost}
         Bedrock: Pay-per-use
         Total: ~${TotalCost}/month
-        Note: Graviton (ARM64) instances offer better price-performance ratio
-      - EndpointCost: !If [CreateEndpoints, "~$29 ($0.01/hour x 5 endpoints)", "$0"]
-        TotalCost: !If [CreateEndpoints, "$45-65", "$23-43"]
+        Note: Compute-optimized (c7g, 2 vCPU) recommended for running Node.js + Docker sandbox concurrently. Swap, health checks, and OS security patches are always enabled at no extra cost.
+      - EndpointCost: !If [CreateEndpoints, "~$29 ($0.01/hour x 5 endpoints)", "$0 (disabled)"]
+        MonitoringCost: !If [EnableCW, "~$4 (CloudWatch Agent + detailed monitoring + alarms + logs)", "$0 (disabled)"]
+        TotalCost: !If 
+          - CreateEndpoints
+          - !If [EnableCW, "$91-96", "$87-92"]
+          - !If [EnableCW, "$63-67", "$58-63"]
 
   InstanceArchitecture:
     Description: "Instance architecture"

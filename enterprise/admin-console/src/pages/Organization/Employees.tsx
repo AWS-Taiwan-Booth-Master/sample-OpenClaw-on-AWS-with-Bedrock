@@ -74,10 +74,12 @@ export default function Employees() {
   const bound = EMPLOYEES.filter(e => e.agentId).length;
   const unbound = EMPLOYEES.length - bound;
   const totalMessages = activityList.reduce((s, a) => s + (a.messagesThisWeek || 0), 0);
-  const onlineNow = activityList.filter(a => {
-    const cs = a.channelStatus || {};
-    return Object.values(cs).some(s => s === 'online');
-  }).length;
+  // Active agents: based on agent status (active = invoked within 15 min)
+  const onlineNow = AGENTS.filter(a => a.status === 'active').length
+    || activityList.filter(a => {
+      const cs = a.channelStatus || {};
+      return Object.values(cs).some(s => s === 'online');
+    }).length;
 
   const filtered = EMPLOYEES.filter(e => {
     if (filterText && !e.name.toLowerCase().includes(filterText.toLowerCase()) && !e.positionName.toLowerCase().includes(filterText.toLowerCase())) return false;
@@ -166,7 +168,7 @@ export default function Employees() {
                     <td className="py-3"><Badge>{e.positionName}</Badge></td>
                     <td className="py-3">
                       <div className="flex items-center gap-1.5">
-                        {e.channels.map(c => {
+                        {(e.channels || []).map(c => {
                           const st = channelStatus[c] || 'offline';
                           return (
                             <div key={c} className="flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px]" style={{ backgroundColor: STATUS_COLORS[st] + '15', color: STATUS_COLORS[st] }}>
@@ -266,7 +268,7 @@ export default function Employees() {
               <div>
                 <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-2">Channel Status</p>
                 <div className="flex flex-wrap gap-2">
-                  {selected.channels.map(c => {
+                  {(selected.channels || []).map(c => {
                     const st = channelStatus[c] || 'offline';
                     return (
                       <div key={c} className="flex items-center gap-2 rounded-lg bg-dark-bg px-3 py-2">
@@ -435,6 +437,24 @@ export default function Employees() {
       }>
         <div className="space-y-3">
           <p className="text-sm text-text-primary">Delete employee <strong>{deletingEmp?.name}</strong>?</p>
+          {/* Always-On cleanup warning */}
+          {(() => {
+            const empAgent = AGENTS.find(a => a.employeeId === deletingEmp?.id);
+            const isAlwaysOn = empAgent?.deployMode === 'always-on-ecs';
+            return isAlwaysOn ? (
+              <div className="rounded-lg bg-warning/10 border border-warning/30 px-3 py-2.5 text-xs space-y-1">
+                <p className="font-semibold text-warning">Always-On agent will be cleaned up:</p>
+                <ul className="list-disc list-inside text-text-secondary space-y-0.5">
+                  <li>Stop & delete ECS Fargate service</li>
+                  <li>Delete EFS Access Point & workspace files</li>
+                  <li>Remove IM credentials (DynamoDB)</li>
+                  <li>Deregister SSM endpoint</li>
+                  <li>Delete S3 serverless workspace</li>
+                  <li>Remove all session, conversation, and usage records</li>
+                </ul>
+              </div>
+            ) : null;
+          })()}
           {deleteError && (
             <div className="flex items-start gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2.5">
               <AlertTriangle size={16} className="text-danger mt-0.5 shrink-0" />

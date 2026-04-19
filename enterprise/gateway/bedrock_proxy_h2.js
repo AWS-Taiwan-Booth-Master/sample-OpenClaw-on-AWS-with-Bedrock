@@ -177,6 +177,36 @@ async function fastPathBedrock(userText) {
 // Message Extraction (unchanged from original)
 // =============================================================================
 
+function stripTrailingConversationMetadata(text) {
+  if (!text) return text;
+  return text
+    .replace(/\n{2,}Conversation info \(untrusted metadata\):[\s\S]*$/i, '')
+    .replace(/\n{2,}Sender \(untrusted metadata\):[\s\S]*$/i, '')
+    .trim();
+}
+
+function unwrapChannelMessage(text) {
+  if (!text) return text;
+
+  const patterns = [
+    /^System:\s*\[[^\]]+\]\s*Slack DM from [^:]+:\s*([\s\S]*)$/i,
+    /^System:\s*\[[^\]]+\]\s*Slack (?:message )?in #[^:]+ from [^:]+:\s*([\s\S]*)$/i,
+    /^System:\s*\[[^\]]+\]\s*Telegram (?:message |DM )?from [^:]+:\s*([\s\S]*)$/i,
+    /^System:\s*\[[^\]]+\]\s*Telegram (?:message )?in .+? from [^:]+:\s*([\s\S]*)$/i,
+    /^System:\s*\[[^\]]+\]\s*WhatsApp (?:message |DM )?from [^:]+:\s*([\s\S]*)$/i,
+    /^System:\s*\[[^\]]+\]\s*WhatsApp (?:message )?in .+? from [^:]+:\s*([\s\S]*)$/i,
+    /^System:\s*\[[^\]]+\]\s*Discord DM from [^:]+:\s*([\s\S]*)$/i,
+    /^System:\s*\[[^\]]+\]\s*Discord (?:message )?in #[^:]+ from [^:]+:\s*([\s\S]*)$/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    if (match) return stripTrailingConversationMetadata(match[1]);
+  }
+
+  return stripTrailingConversationMetadata(text);
+}
+
 function extractUserMessage(body) {
   const messages = body.messages || [];
   const systemParts = body.system || [];
@@ -194,13 +224,14 @@ function extractUserMessage(body) {
     }
   }
 
+  const originalUserText = userText;
   let channel = 'unknown';
   let userId = 'unknown';
 
   // Priority 0: Extract from OpenClaw's JSON metadata in message text
   // OpenClaw embeds sender info as JSON in the conversation context
   try {
-    const jsonMatch = userText.match(/```json\s*\n([\s\S]*?)\n```/);
+    const jsonMatch = originalUserText.match(/```json\s*\n([\s\S]*?)\n```/);
     if (jsonMatch) {
       const meta = JSON.parse(jsonMatch[1]);
       if (meta.sender_id) {
@@ -211,11 +242,11 @@ function extractUserMessage(body) {
           channel = metaChannel;
         } else if (meta.channel_type) {
           channel = meta.channel_type.toLowerCase();
-        } else if (userText.includes('Discord')) channel = 'discord';
-        else if (userText.includes('Telegram')) channel = 'telegram';
-        else if (userText.includes('Slack')) channel = 'slack';
-        else if (userText.includes('WhatsApp')) channel = 'whatsapp';
-        else if (userText.includes('Feishu') || userText.includes('feishu')) channel = 'feishu';
+        } else if (originalUserText.includes('Discord')) channel = 'discord';
+        else if (originalUserText.includes('Telegram')) channel = 'telegram';
+        else if (originalUserText.includes('Slack')) channel = 'slack';
+        else if (originalUserText.includes('WhatsApp')) channel = 'whatsapp';
+        else if (originalUserText.includes('Feishu') || originalUserText.includes('feishu')) channel = 'feishu';
         // Heuristic fallback: detect channel by sender_id format when no keyword found
         // Telegram user IDs are 7-12 digits; Discord IDs are 17-19 digits; WhatsApp uses +phone
         else if (/^\d{7,12}$/.test(meta.sender_id)) channel = 'telegram';
@@ -248,14 +279,14 @@ function extractUserMessage(body) {
   } catch (e) { /* fall through */ }
 
   // Priority 1: extract from user message text (original regex)
-  const slackDm = userText.match(/Slack DM from ([\w]+):/i);
-  const slackChan = userText.match(/Slack (?:message )?in #([\w-]+).*?from ([\w]+):/i);
-  const waDm = userText.match(/WhatsApp (?:message |DM )?from ([\w+\-.]+):/i);
-  const waGroup = userText.match(/WhatsApp (?:message )?in (.+?) from ([\w+\-.]+):/i);
-  const tgDm = userText.match(/Telegram (?:message |DM )?from ([\w]+):/i);
-  const tgGroup = userText.match(/Telegram (?:message )?in (.+?) from ([\w]+):/i);
-  const dcDm = userText.match(/Discord DM from ([\w#]+):/i);
-  const dcChan = userText.match(/Discord (?:message )?in #([\w-]+).*?from ([\w#]+):/i);
+  const slackDm = originalUserText.match(/Slack DM from ([\w]+):/i);
+  const slackChan = originalUserText.match(/Slack (?:message )?in #([\w-]+).*?from ([\w]+):/i);
+  const waDm = originalUserText.match(/WhatsApp (?:message |DM )?from ([\w+\-.]+):/i);
+  const waGroup = originalUserText.match(/WhatsApp (?:message )?in (.+?) from ([\w+\-.]+):/i);
+  const tgDm = originalUserText.match(/Telegram (?:message |DM )?from ([\w]+):/i);
+  const tgGroup = originalUserText.match(/Telegram (?:message )?in (.+?) from ([\w]+):/i);
+  const dcDm = originalUserText.match(/Discord DM from ([\w#]+):/i);
+  const dcChan = originalUserText.match(/Discord (?:message )?in #([\w-]+).*?from ([\w#]+):/i);
 
   if (slackChan) { channel = 'slack'; userId = 'chan_' + slackChan[1] + '_' + slackChan[2]; }
   else if (slackDm) { channel = 'slack'; userId = 'dm_' + slackDm[1]; }
@@ -280,6 +311,7 @@ function extractUserMessage(body) {
     }
   }
 
+  userText = unwrapChannelMessage(originalUserText);
   return { userText, channel, userId };
 }
 
@@ -375,11 +407,105 @@ function tryTenantRouterWithTimeout(channel, userId, message, timeoutMs) {
 }
 
 // =============================================================================
-// Core Request Router (fast-path + warm path)
+// Fargate Direct Forwarding (bypasses Tenant Router for Fargate-hosted agents)
+// =============================================================================
+
+// Cache: empId → { endpoint, tier, expiresAt }
+const _fargateEndpointCache = new Map();
+const _FARGATE_CACHE_TTL = 60_000; // 60 seconds
+
+/**
+ * Resolve Fargate endpoint for a user. Calls Admin Console internal API.
+ * Returns { endpoint: "http://10.0.x.x:8080", tier: "executive" } or null.
+ */
+async function resolveFargateEndpoint(channel, userId) {
+  const cacheKey = `fargate__${userId}`;
+  const cached = _fargateEndpointCache.get(cacheKey);
+  if (cached && Date.now() < cached.expiresAt) {
+    return cached.endpoint ? cached : null;
+  }
+
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const req = http.request({
+        hostname: '127.0.0.1', port: 8099,
+        path: `/api/v1/internal/resolve-fargate?channel=${encodeURIComponent(channel)}&channelUserId=${encodeURIComponent(userId)}`,
+        method: 'GET', timeout: 5000,
+      }, (res) => {
+        let data = '';
+        res.on('data', c => data += c);
+        res.on('end', () => {
+          try { resolve(JSON.parse(data)); } catch { resolve(null); }
+        });
+      });
+      req.on('error', () => resolve(null));
+      req.on('timeout', () => { req.destroy(); resolve(null); });
+      req.end();
+    });
+
+    if (result && result.endpoint) {
+      const entry = { endpoint: result.endpoint, tier: result.tier || '', expiresAt: Date.now() + _FARGATE_CACHE_TTL };
+      _fargateEndpointCache.set(cacheKey, entry);
+      return entry;
+    }
+    _fargateEndpointCache.set(cacheKey, { endpoint: '', tier: '', expiresAt: Date.now() + _FARGATE_CACHE_TTL });
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Forward a message directly to a Fargate container's /invocations endpoint.
+ * This bypasses Tenant Router entirely — the container's server.py handles
+ * workspace assembly, guardrail, audit, usage tracking.
+ */
+function forwardToFargateContainer(endpoint, channel, userId, message) {
+  return new Promise((resolve, reject) => {
+    // Build tenant_id in the same format as derive_tenant_id in tenant_router.py
+    const channelShort = { whatsapp: 'wa', telegram: 'tg', discord: 'dc', slack: 'sl',
+      teams: 'ms', imessage: 'im', googlechat: 'gc', webchat: 'web',
+      playground: 'pgnd', twin: 'twin', portal: 'port' }[channel] || channel.slice(0, 4);
+    const tenantId = `${channelShort}__${userId}__fargate`;
+
+    const url = new URL('/invocations', endpoint);
+    const payload = JSON.stringify({ sessionId: tenantId, tenant_id: tenantId, message });
+
+    const req = http.request(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(payload),
+        'X-Amzn-Bedrock-AgentCore-Runtime-Session-Id': tenantId,
+      },
+      timeout: 300000,
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(data);
+          const text = result.response || 'No response';
+          resolve(String(text));
+        } catch (e) {
+          resolve(data || 'Parse error');
+        }
+      });
+    });
+    req.on('error', e => reject(e));
+    req.on('timeout', () => { req.destroy(); reject(new Error('Fargate container timeout')); });
+    req.write(payload);
+    req.end();
+  });
+}
+
+// =============================================================================
+// Core Request Router (fast-path + warm path + Fargate direct)
 // =============================================================================
 
 /**
  * Route a request based on tenant state:
+ *   Fargate -> forward directly to Fargate container (no cold start, no Tenant Router)
  *   warm    -> forward to Tenant Router (full OpenClaw, ~10s)
  *   warming -> try Tenant Router with timeout, fallback to fast-path
  *   cold    -> fast-path Bedrock (~2-3s) + async prewarm
@@ -389,6 +515,20 @@ async function routeRequest(channel, userId, userText) {
   const status = getTenantStatus(tenantKey);
 
   log(`Route: ${tenantKey} status=${status} fast_path=${FAST_PATH_ENABLED}`);
+
+  // --- Fargate: if employee's position uses Fargate, go direct (no cold start) ---
+  const fargate = await resolveFargateEndpoint(channel, userId);
+  if (fargate) {
+    log(`Fargate direct: ${tenantKey} → ${fargate.tier} (${fargate.endpoint})`);
+    try {
+      const text = await forwardToFargateContainer(fargate.endpoint, channel, userId, userText);
+      setTenantStatus(tenantKey, 'warm');
+      return text;
+    } catch (e) {
+      log(`Fargate direct failed for ${tenantKey}: ${e.message}, falling back to Tenant Router`);
+      // Fall through to normal routing
+    }
+  }
 
   // --- Warm: microVM is running, use full OpenClaw pipeline ---
   if (status === 'warm') {

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Puzzle, Lock, Check, Send, ChevronRight } from 'lucide-react';
 import { api } from '../../api/client';
 import { Card, Badge, Button } from '../../components/ui';
+import { usePortalAgent } from '../../contexts/PortalAgentContext';
 
 function friendlyName(raw: string) {
   return raw.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
@@ -11,14 +12,15 @@ function friendlyDesc(description?: string) {
 }
 
 export default function MySkills() {
+  const { agentType } = usePortalAgent();
   const [data, setData] = useState<any>(null);
   const [requested, setRequested] = useState<Set<string>>(new Set());
   const [requesting, setRequesting] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
   useEffect(() => {
-    api.get<any>('/portal/skills').then(setData).catch(() => {});
-  }, []);
+    api.get<any>(`/portal/skills?agent_type=${agentType}`).then(setData).catch(() => {});
+  }, [agentType]);
 
   const handleRequest = async (skillName: string) => {
     setRequesting(skillName);

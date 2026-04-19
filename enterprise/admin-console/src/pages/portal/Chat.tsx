@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Bot, User, Loader2, Trash2, Zap } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
+import { Send, Bot, User, Loader2, Trash2, Zap, Radio, Shield, Clock, Bell } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { useAuth } from '../../contexts/AuthContext';
+import { usePortalAgent } from '../../contexts/PortalAgentContext';
 import { api } from '../../api/client';
 import ClawForgeLogo from '../../components/ClawForgeLogo';
 
@@ -35,9 +37,9 @@ function markAgentWarm(userId: string) {
 
 // ── Warmup indicator — only shown on first-ever connection ──────────────────
 
-function WarmupIndicator() {
+function WarmupIndicator({ seconds = 25 }: { seconds?: number }) {
   const [visible, setVisible] = useState(false);
-  const [remaining, setRemaining] = useState(6);
+  const [remaining, setRemaining] = useState(seconds);
 
   useEffect(() => {
     const show = setTimeout(() => setVisible(true), 1000);
@@ -59,7 +61,7 @@ function WarmupIndicator() {
     );
   }
 
-  const pct = Math.round(((6 - remaining) / 6) * 100);
+  const pct = Math.round(((seconds - remaining) / seconds) * 100);
   return (
     <div className="rounded-xl bg-dark-card border border-warning/30 px-4 py-3 w-72 space-y-2">
       <div className="flex items-center justify-between">
@@ -71,7 +73,7 @@ function WarmupIndicator() {
       <div className="h-1 w-full rounded-full bg-dark-border overflow-hidden">
         <div className="h-full rounded-full bg-warning transition-[width] duration-1000" style={{ width: `${pct}%` }} />
       </div>
-      <p className="text-[10px] text-text-muted">First message · cold-start ~10s — subsequent responses are instant</p>
+      <p className="text-[10px] text-text-muted">First message · cold-start ~{seconds}s — subsequent responses are instant</p>
     </div>
   );
 }
@@ -81,15 +83,23 @@ function WarmupIndicator() {
 export default function PortalChat() {
   const { user } = useAuth();
   const userId = user?.id || 'unknown';
+  const [searchParams] = useSearchParams();
+  const { agentType, hasAlwaysOn, alwaysOnInfo: aoCtx } = usePortalAgent();
+  // Map context info to local shape for compatibility
+  const alwaysOnInfo = aoCtx ? { tier: aoCtx.tier, status: aoCtx.status, enabled: hasAlwaysOn, running: aoCtx.running } : null;
+
+  const welcomeMessage = (type: 'serverless' | 'always-on'): Message => ({
+    id: 0, role: 'assistant',
+    content: type === 'always-on'
+      ? `Hello ${user?.name || 'there'}! I'm your **dedicated Always-On Agent** (${alwaysOnInfo?.tier || 'Fargate'} tier).\n\nI'm always running and ready to respond instantly. I can also proactively assist you via scheduled tasks (HEARTBEAT). How can I help?`
+      : `Hello ${user?.name || 'there'}! I'm your **${user?.positionName || 'AI'} Agent** at ACME Corp.\n\nI can help you with tasks related to your ${user?.positionName || ''} role in the ${user?.departmentName || ''} department. Just type your question or request below.\n\n> _Note: First message may take ~10s (cold start). Subsequent responses are faster._`,
+    timestamp: new Date().toISOString(),
+  });
 
   const [messages, setMessages] = useState<Message[]>(() => {
     const saved = loadMessages(userId);
     if (saved.length > 0) return saved;
-    return [{
-      id: 0, role: 'assistant',
-      content: `Hello ${user?.name || 'there'}! I'm your **${user?.positionName || 'AI'} Agent** at ACME Corp.\n\nI can help you with tasks related to your ${user?.positionName || ''} role in the ${user?.departmentName || ''} department. Just type your question or request below.`,
-      timestamp: new Date().toISOString(),
-    }];
+    return [welcomeMessage(agentType)];
   });
 
   const [input, setInput] = useState('');
@@ -107,6 +117,32 @@ export default function PortalChat() {
   useEffect(() => { saveMessages(userId, messages); }, [messages, userId]);
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
+  // Poll for cron notifications every 15 seconds
+  const seenNotifs = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const poll = async () => {
+      try {
+        const data = await api.get<{ notifications: Array<{ id: string; title: string; message: string; read: boolean; createdAt: string }> }>('/portal/notifications');
+        for (const n of data.notifications || []) {
+          if (n.read || seenNotifs.current.has(n.id)) continue;
+          seenNotifs.current.add(n.id);
+          setMessages(prev => [...prev, {
+            id: Date.now() + Math.random(),
+            role: 'assistant' as const,
+            content: `🔔 **${n.title}**\n\n${n.message}`,
+            timestamp: n.createdAt || new Date().toISOString(),
+            source: 'cron',
+          }]);
+          // Mark as read
+          api.post(`/portal/notifications/${n.id}/read`, {}).catch(() => {});
+        }
+      } catch { /* silent */ }
+    };
+    poll(); // initial check
+    const interval = setInterval(poll, 15000);
+    return () => clearInterval(interval);
+  }, [userId]);
+
   const clearChat = useCallback(() => {
     setMessages([{ id: Date.now(), role: 'assistant', content: 'Chat cleared. How can I help you?', timestamp: new Date().toISOString() }]);
   }, []);
@@ -120,7 +156,7 @@ export default function PortalChat() {
     setInput('');
     setSending(true);
 
-    const doCall = () => api.post<{ response: string; source?: string; model?: string }>('/portal/chat', { message: text });
+    const doCall = () => api.post<{ response: string; source?: string; model?: string }>('/portal/chat', { message: text, agent_type: agentType });
 
     try {
       const resp = await doCall();
@@ -161,26 +197,60 @@ export default function PortalChat() {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-dark-border px-6 py-3">
+      {/* Header — visually differentiated by agent mode */}
+      <div className={`flex items-center justify-between border-b px-6 py-3 ${
+        agentType === 'always-on' ? 'border-success/20 bg-success/5' : 'border-dark-border'
+      }`}>
         <div className="flex items-center gap-3">
           <ClawForgeLogo size={36} animate={sending ? 'working' : 'idle'} />
           <div>
-            <h1 className="text-sm font-semibold text-text-primary">{user?.positionName} Agent</h1>
-            <p className="text-xs text-text-muted">{user?.name} · {user?.departmentName}</p>
+            <div className="flex items-center gap-2">
+              <h1 className="text-sm font-semibold text-text-primary">{user?.positionName} Agent</h1>
+              {agentType === 'always-on' ? (
+                <span className="flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-medium text-success">
+                  <Zap size={10} /> Always-On {alwaysOnInfo?.tier ? `· ${alwaysOnInfo.tier}` : ''}
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 rounded-full bg-primary/15 px-2 py-0.5 text-[10px] font-medium text-primary-light">
+                  <Radio size={10} /> On-demand
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-text-muted">
+              {user?.name} · {user?.departmentName}
+              {agentType === 'always-on'
+                ? ' · Instant response · HEARTBEAT enabled'
+                : ' · ~10s cold start · Shared infrastructure'}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-3">
+          {/* Connection status */}
           <div className="flex items-center gap-1.5">
-            <div className={`w-2 h-2 rounded-full ${warm ? 'bg-success' : 'bg-warning'} animate-pulse`} />
-            <span className={`text-xs ${warm ? 'text-success' : 'text-warning'}`}>
-              {warm ? 'Connected' : 'Standby'}
-            </span>
+            {agentType === 'always-on' ? (
+              <>
+                <div className={`w-2 h-2 rounded-full ${alwaysOnInfo?.status === 'RUNNING' || warm ? 'bg-success' : 'bg-warning'} animate-pulse`} />
+                <span className={`text-xs ${alwaysOnInfo?.status === 'RUNNING' || warm ? 'text-success' : 'text-warning'}`}>
+                  {alwaysOnInfo?.status === 'RUNNING' || warm ? 'Running' : 'Starting'}
+                </span>
+              </>
+            ) : (
+              <>
+                <div className={`w-2 h-2 rounded-full ${warm ? 'bg-success' : 'bg-zinc-500'}`} />
+                <span className={`text-xs ${warm ? 'text-success' : 'text-text-muted'}`}>
+                  {warm ? 'Warm' : 'Cold'}
+                </span>
+              </>
+            )}
           </div>
+          {/* Agent mode shown as read-only badge — switching is in sidebar */}
+          <span className={`text-[10px] rounded-lg px-2 py-1 ${agentType === 'always-on' ? 'bg-success/10 text-success' : 'bg-dark-bg text-text-muted'}`}>
+            {agentType === 'always-on' ? '⚡ Always-On' : '📡 Serverless'}
+          </span>
           <button onClick={clearChat}
             className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-text-muted hover:text-red-400 hover:bg-red-500/10 transition-colors"
             title="Clear display only — agent memory is preserved">
-            <Trash2 size={14} /> Clear display
+            <Trash2 size={14} /> Clear
           </button>
         </div>
       </div>
@@ -217,8 +287,10 @@ export default function PortalChat() {
               <p className={`text-[10px] mt-1.5 ${msg.role === 'user' ? 'text-white/60' : 'text-text-muted'}`}>
                 {msg.role === 'user' && '✓ '}
                 {new Date(msg.timestamp).toLocaleTimeString()}
-                {msg.source === 'agentcore' && ' · AgentCore'}
-                {msg.source === 'always-on' && ' · Always-on'}
+                {msg.source === 'agentcore' && ' · AgentCore ⚡'}
+                {msg.source === 'fargate' && ' · Fargate 🟢'}
+                {msg.source === 'always-on' && ' · Always-On 🟢'}
+                {msg.source === 'cron' && ' · Scheduled 🔔'}
                 {msg.model && ` · ${msg.model.split('/').pop()?.split(':')[0] || ''}`}
               </p>
             </div>
@@ -233,7 +305,7 @@ export default function PortalChat() {
         {sending && (
           <div className="flex gap-3">
             <div className="shrink-0 mt-1"><ClawForgeLogo size={28} animate="working" /></div>
-            {!warm ? <WarmupIndicator /> : (
+            {!warm ? <WarmupIndicator seconds={agentType === 'always-on' ? 3 : 25} /> : (
               <div className="rounded-xl bg-dark-card border border-dark-border px-4 py-3 flex items-center gap-2">
                 <Loader2 size={13} className="animate-spin text-text-muted" />
                 <span className="text-xs text-text-muted">Thinking...</span>
@@ -265,7 +337,10 @@ export default function PortalChat() {
         </div>
         <div className="flex items-center justify-between mt-2">
           <p className="text-[10px] text-text-muted">Press Enter to send</p>
-          <p className="text-[10px] text-text-muted">Powered by AWS Bedrock{warm && ' · Always-on'}</p>
+          <p className="text-[10px] text-text-muted">
+            Powered by AWS Bedrock
+            {agentType === 'always-on' ? ' · Dedicated Fargate Container' : ' · Shared AgentCore'}
+          </p>
         </div>
       </div>
     </div>

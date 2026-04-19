@@ -20,6 +20,7 @@ export interface Position {
   defaultKnowledge: string[];
   toolAllowlist: string[];
   defaultChannel?: ChannelType; // Default messaging channel for auto-provision
+  allowedIMPlatforms?: string[];
   memberCount: number;
   createdAt: string;
 }
@@ -57,9 +58,9 @@ export interface Agent {
   createdAt: string;
   updatedAt: string;
   // Always-on agent fields (ECS Fargate)
-  deployMode?: 'personal' | 'always-on' | 'always-on-ecs' | 'serverless';
+  deployMode?: DeployMode;
   containerPort?: number;
-  containerStatus?: 'starting' | 'running' | 'stopped' | 'error' | 'reloading';
+  containerStatus?: ContainerStatus;
   ecsServiceName?: string;
   ecsTaskArn?: string;
 }
@@ -117,9 +118,53 @@ export interface AuditEntry {
   status: 'success' | 'blocked' | 'warning' | 'info';
 }
 
+// === Fargate / Always-On Types ===
+
+export type DeployMode = 'serverless' | 'always-on-ecs' | 'personal' | 'always-on';
+
+export type ContainerStatus = 'starting' | 'running' | 'stopped' | 'error' | 'reloading';
+
+export type Tier = 'standard' | 'restricted' | 'engineering' | 'executive';
+
+export interface AlwaysOnStatus {
+  enabled: boolean;
+  running: boolean;
+  tier?: Tier;
+  ecsStatus?: string;
+  serviceName?: string;
+  endpoint?: string;
+  taskArn?: string;
+  containerPort?: number;
+}
+
+export interface AlwaysOnChannel {
+  channel: string;
+  connectedAt?: string;
+  status?: string;
+}
+
+export interface RuntimeConfig {
+  id: string;
+  name: string;
+  model?: string;
+  roleArn?: string;
+  guardrailId?: string;
+  tier?: Tier;
+}
+
 // === Shared ===
 
 export type ChannelType = 'telegram' | 'whatsapp' | 'slack' | 'discord' | 'feishu' | 'dingtalk' | 'portal' | 'web';
+
+/** Normalize legacy deploy mode values to canonical form. */
+export function normalizeDeployMode(mode?: string): 'serverless' | 'always-on-ecs' {
+  if (mode === 'always-on' || mode === 'always-on-ecs') return 'always-on-ecs';
+  return 'serverless'; // 'personal', 'serverless', undefined all map here
+}
+
+export function isAlwaysOn(mode?: string): boolean {
+  return mode === 'always-on' || mode === 'always-on-ecs';
+}
 
 export const CHANNEL_LABELS: Record<string, string> = {
   telegram: 'Telegram',

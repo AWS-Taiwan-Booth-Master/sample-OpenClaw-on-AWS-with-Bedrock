@@ -14,7 +14,7 @@
 | AWS Credentials | `aws sts get-caller-identity` | Must succeed |
 | Bedrock Model Access | AWS Console → Bedrock → Model access | Enable your chosen model |
 
-**Bedrock Model Access:** Before deploying, go to [Amazon Bedrock Console](https://console.aws.amazon.com/bedrock/home#/modelaccess) → "Manage model access" → Enable at least `Amazon Nova Lite` (default model). Without this, agents will return empty responses.
+**Bedrock Model Access:** Before deploying, go to [Amazon Bedrock Console](https://console.aws.amazon.com/bedrock/home#/modelaccess) → "Manage model access" → Enable models for your 4 tiers. Recommended: MiniMax M2.5 (Standard), DeepSeek V3.2 (Restricted), Claude Sonnet 4.5 (Engineering), Claude Sonnet 4.6 (Executive).
 
 **IAM Permissions** for the deploying user: CloudFormation, EC2, S3, ECR, SSM, DynamoDB, ECS, EFS, IAM (create roles), Bedrock, CloudWatch Logs.
 
@@ -35,8 +35,8 @@ Edit `.env` — only 3 values are required:
 |----------|----------|---------|-------|
 | `STACK_NAME` | Yes | `openclaw` | Names all resources. Must be unique per account/region. |
 | `REGION` | Yes | `us-east-1` | Any region with Bedrock + AgentCore (us-east-1, us-west-2, ap-northeast-1, etc.). |
-| `ADMIN_PASSWORD` | Yes | — | Shared login password for all admin accounts. |
-| `MODEL` | No | `global.amazon.nova-2-lite-v1:0` | Bedrock model ID. |
+| `ADMIN_PASSWORD` | Yes | — | Initial password for all accounts. Employees must set a personal password on first login. |
+| `MODEL` | No | `minimax.minimax-m2.5` | Default Bedrock model ID (Standard tier). Each tier can use a different model. |
 | `INSTANCE_TYPE` | No | `c7g.large` | `t4g.small` for testing, `c7g.large` for production. |
 | `DYNAMODB_TABLE` | No | = STACK_NAME | **Must equal STACK_NAME** (IAM policy constraint). Leave empty. |
 | `DYNAMODB_REGION` | No | = REGION | Can differ from main REGION if needed. |
@@ -216,16 +216,16 @@ sudo su - ubuntu
 
 ```bash
 # Telegram — get token from @BotFather
-openclaw channels add telegram --token "YOUR_TELEGRAM_BOT_TOKEN"
+openclaw channels add --channel telegram --token "YOUR_TELEGRAM_BOT_TOKEN"
 
 # Discord — get token from discord.com/developers → Bot tab
-openclaw channels add discord --token "YOUR_DISCORD_BOT_TOKEN"
+openclaw channels add --channel discord --token "YOUR_DISCORD_BOT_TOKEN"
 
 # Slack — get token from api.slack.com/apps → Bot User OAuth Token
-openclaw channels add slack --bot-token "xoxb-YOUR_TOKEN" --app-token "xapp-YOUR_TOKEN"
+openclaw channels add --channel slack --bot-token "xoxb-YOUR_TOKEN" --app-token "xapp-YOUR_TOKEN"
 
 # Feishu / Lark — get App ID + Secret from Feishu Admin Console
-openclaw channels add feishu --app-id "YOUR_APP_ID" --app-secret "YOUR_APP_SECRET"
+openclaw channels add --channel feishu --app-id "YOUR_APP_ID" --app-secret "YOUR_APP_SECRET"
 
 # Verify all channels
 openclaw channels list
@@ -293,18 +293,19 @@ This confirms SOUL templates, tool permissions, and Bedrock connectivity are all
 1. **Add employee:** Organization → Employees → "Add Employee"
    - Select position (determines SOUL, skills, permissions)
    - A Serverless agent is auto-provisioned
-2. **Share credentials:** Employee ID + password (same as ADMIN_PASSWORD for demo, or set per-employee)
+2. **Share credentials:** Employee ID + initial password (`ADMIN_PASSWORD`)
 3. **Share Portal URL:** The port-forwarded URL or CloudFront domain
 
 ### For the Employee
 
-1. **Log in:** Open Portal URL → enter Employee ID + password
-2. **Chat:** Click "Chat" in sidebar → start talking to your agent
-3. **Connect IM (optional):**
+1. **Log in:** Open Portal URL → enter Employee ID + initial password
+2. **Set personal password:** First login requires setting a new personal password (min 8 chars, uppercase, lowercase, digit, special character). Cannot proceed until password is changed.
+3. **Chat:** Click "Chat" in sidebar → start talking to your agent
+4. **Connect IM (optional):**
    - Portal → "Connect IM" → Select platform (Telegram, Discord, etc.)
    - Follow the pairing instructions (scan QR or send `/start` token to the bot)
    - Admin approves pairing in Admin Console → Bindings → "Approve Pairing"
-4. **Profile:** Portal → "My Profile" → view agent details, SOUL version, active skills
+5. **Profile:** Portal → "My Profile" → view agent details, SOUL version, active skills
 
 ---
 
@@ -345,7 +346,7 @@ grep STACK_NAME /etc/openclaw/env
 ```bash
 # Test Bedrock access from EC2
 aws bedrock-runtime invoke-model \
-  --model-id "global.amazon.nova-2-lite-v1:0" \
+  --model-id "minimax.minimax-m2.5" \
   --body '{"messages":[{"role":"user","content":[{"text":"hello"}]}]}' \
   --region us-east-1 /dev/stdout 2>&1 | head -5
 ```
@@ -434,18 +435,36 @@ Amazon Bedrock (model inference)
 
 **Data stores:** DynamoDB (org data, audit), S3 (workspaces, SOUL, skills), SSM (secrets, config), EFS (always-on persistence)
 
+**4-Tier Runtime Model (production):**
+
+| Tier | Model | Guardrail | Positions |
+|------|-------|-----------|-----------|
+| Standard | MiniMax M2.5 | Moderate (PII) | AE, CSM, HR, PM |
+| Restricted | DeepSeek V3.2 | Strict (topic + PII) | FA, Legal |
+| Engineering | Claude Sonnet 4.5 | None | SDE, DevOps, QA |
+| Executive | Claude Sonnet 4.6 | None | Exec, SA |
+
+**Key Architecture Decisions:**
+- **No Session Storage** — every cold start rebuilds workspace from S3. Eliminates identity loss, stale KB, 1GB space risk.
+- **Dual mode** — AgentCore (serverless, cold start 25s) or Fargate (always-on, 0s cold start). Per-position toggle.
+- **Agent knows its S3 path** — workspace_assembler injects S3 bucket/path into SOUL.md context, enabling autonomous file upload.
+- **ThreadingMixIn** — server.py + tenant_router.py use multi-threaded HTTP server. Eliminates 502 from healthcheck blocking.
+
 ---
 
 ## 8. Cost Estimates
 
 | Component | Monthly Cost | Notes |
 |-----------|-------------|-------|
-| EC2 c7g.large | ~$60 | Gateway + admin console |
-| Bedrock Nova Lite | ~$0.30/employee | Based on ~500 messages/month |
+| EC2 c7g.large | ~$60 | Admin Console + Gateway (IM relay) |
+| Bedrock (4-tier models) | ~$2-15/employee | MiniMax M2.5 cheapest, Sonnet 4.6 most expensive |
 | DynamoDB | ~$5 | On-demand, scales with usage |
 | S3 | ~$1 | Workspace storage |
-| AgentCore | Usage-based | Per-session pricing |
-| **Total (30 employees)** | **~$75/month** | vs $900/month for ChatGPT Team |
+| AgentCore (serverless) | Usage-based | Per-session, cold start 25s |
+| Fargate (always-on) | ~$16-31/tier/month | 4 tiers ≈ $73/month, 0s cold start |
+| EFS | ~$0.30/GB/month | Fargate workspace persistence |
+| **Total (30 emp, AgentCore)** | **~$80/month** | Serverless mode |
+| **Total (30 emp, Fargate)** | **~$145/month** | Always-on mode, instant response |
 
 ---
 

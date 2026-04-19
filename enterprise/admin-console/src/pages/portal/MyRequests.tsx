@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { FileText, Clock, CheckCircle, XCircle, Plus, Send, X } from 'lucide-react';
 import { api } from '../../api/client';
 import { Card, Badge, Button } from '../../components/ui';
+import { usePortalAgent } from '../../contexts/PortalAgentContext';
 
 const TOOL_OPTIONS = [
   { value: 'shell', label: 'Shell — Execute commands on agent microVM' },
@@ -16,6 +17,7 @@ const TOOL_OPTIONS = [
 ];
 
 export default function MyRequests() {
+  const { agentType } = usePortalAgent();
   const [data, setData] = useState<any>(null);
   const [showNew, setShowNew] = useState(false);
   const [selectedTool, setSelectedTool] = useState('');
@@ -23,8 +25,8 @@ export default function MyRequests() {
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<{ ok: boolean; msg: string } | null>(null);
 
-  const load = () => api.get<any>('/portal/requests').then(setData).catch(() => {});
-  useEffect(() => { load(); }, []);
+  const load = () => api.get<any>(`/portal/requests?agent_type=${agentType}`).then(setData).catch(() => {});
+  useEffect(() => { load(); }, [agentType]);
 
   const handleSubmit = async () => {
     if (!selectedTool) return;

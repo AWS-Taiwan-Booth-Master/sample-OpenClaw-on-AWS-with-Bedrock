@@ -3,6 +3,8 @@ import { User, Bot, Save, Brain, Eye, EyeOff, ChevronDown, ChevronRight, Share2,
 import { useAuth } from '../../contexts/AuthContext';
 import { api } from '../../api/client';
 import { Badge, Button, Card, StatusDot } from '../../components/ui';
+import { isAlwaysOn } from '../../types';
+import { usePortalAgent } from '../../contexts/PortalAgentContext';
 
 const USER_MD_TEMPLATE = `## My working style
 I prefer concise, direct answers. Skip long preambles.
@@ -33,13 +35,15 @@ export default function PortalProfile() {
   const [twinLoading, setTwinLoading] = useState(false);
   const [copied, setCopied] = useState(false);
 
+  const { agentType } = usePortalAgent();
+
   useEffect(() => {
-    api.get<any>('/portal/profile').then(data => {
+    api.get<any>(`/portal/profile?agent_type=${agentType}`).then(data => {
       setProfile(data);
       setUserMd(data.userMd || '');
     }).catch(() => {});
     api.get<any>('/portal/twin').then(setTwin).catch(() => {});
-  }, []);
+  }, [agentType]);
 
   const handleTwinToggle = useCallback(async () => {
     setTwinLoading(true);
@@ -103,7 +107,7 @@ export default function PortalProfile() {
           <div>
             <p className="text-xs text-text-muted">Mode</p>
             <div className="flex items-center gap-1.5 mt-0.5">
-              {profile?.deployMode === 'always-on-ecs' ? (
+              {isAlwaysOn(profile?.deployMode) ? (
                 <>
                   <Zap size={13} className="text-primary" />
                   <span className="text-sm font-medium text-primary">Always-on</span>

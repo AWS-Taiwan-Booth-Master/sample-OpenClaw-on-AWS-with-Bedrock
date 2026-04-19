@@ -57,7 +57,7 @@ done
 # ── Defaults ──────────────────────────────────────────────────────────────────
 STACK_NAME="${STACK_NAME:-openclaw}"
 REGION="${REGION:-us-east-1}"
-MODEL="${MODEL:-global.amazon.nova-2-lite-v1:0}"
+MODEL="${MODEL:-global.anthropic.claude-sonnet-4-5-20250929-v1:0}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-c7g.large}"
 KEY_PAIR="${KEY_PAIR:-}"
 EXISTING_VPC_ID="${EXISTING_VPC_ID:-}"
@@ -151,6 +151,29 @@ CFN_PARAMS="$CFN_PARAMS ParameterKey=CreateVPCEndpoints,ParameterValue=${CREATE_
 CFN_PARAMS="$CFN_PARAMS ParameterKey=ExistingVpcId,ParameterValue=${EXISTING_VPC_ID}"
 CFN_PARAMS="$CFN_PARAMS ParameterKey=ExistingSubnetId,ParameterValue=${EXISTING_SUBNET_ID}"
 
+
+# Template is 70KB — exceeds 51,200 byte inline limit, must use S3
+info "  Uploading CloudFormation template to S3..."
+STAGING_BUCKET="openclaw-deploy-${ACCOUNT_ID}-${REGION}"
+
+if ! aws s3api head-bucket --bucket "$STAGING_BUCKET" 2>/dev/null; then
+  echo "[info]  Creating staging bucket s3://${STAGING_BUCKET}..."
+  if [ "$REGION" = "us-east-1" ]; then
+    aws s3api create-bucket --bucket "$STAGING_BUCKET" --region "$REGION"
+  else
+    aws s3api create-bucket --bucket "$STAGING_BUCKET" --region "$REGION" \
+      --create-bucket-configuration LocationConstraint="$REGION"
+  fi
+  aws s3api put-public-access-block --bucket "$STAGING_BUCKET" \
+    --public-access-block-configuration "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+fi
+
+aws s3 cp "$SCRIPT_DIR/clawdbot-bedrock-agentcore-multitenancy.yaml" \
+  "s3://${STAGING_BUCKET}/cfn/clawdbot-bedrock-agentcore-multitenancy.yaml" \
+  --region "$REGION" --quiet
+TEMPLATE_URL="https://${STAGING_BUCKET}.s3.${REGION}.amazonaws.com/cfn/clawdbot-bedrock-agentcore-multitenancy.yaml"
+success "  Template uploaded"
+
 # Try to create; if stack exists, do an update instead
 STACK_STATUS=$(aws cloudformation describe-stacks \
   --stack-name "$STACK_NAME" --region "$REGION" \
@@ -160,7 +183,7 @@ if [ "$STACK_STATUS" = "DOES_NOT_EXIST" ]; then
   info "  Creating new stack (takes ~8 min)..."
   aws cloudformation create-stack \
     --stack-name "$STACK_NAME" \
-    --template-body file://"$SCRIPT_DIR/clawdbot-bedrock-agentcore-multitenancy.yaml" \
+    --template-url "$TEMPLATE_URL" \
     --capabilities CAPABILITY_NAMED_IAM \
     --region "$REGION" \
     --parameters $CFN_PARAMS
@@ -170,7 +193,7 @@ else
   info "  Stack exists ($STACK_STATUS) — updating..."
   aws cloudformation update-stack \
     --stack-name "$STACK_NAME" \
-    --template-body file://"$SCRIPT_DIR/clawdbot-bedrock-agentcore-multitenancy.yaml" \
+    --template-url "$TEMPLATE_URL" \
     --capabilities CAPABILITY_NAMED_IAM \
     --region "$REGION" \
     --parameters $CFN_PARAMS 2>/dev/null && \
@@ -198,6 +221,10 @@ ECS_SUBNET=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --reg
   --query 'Stacks[0].Outputs[?OutputKey==`AlwaysOnSubnetId`].OutputValue' --output text)
 EFS_ID=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" \
   --query 'Stacks[0].Outputs[?OutputKey==`AlwaysOnEFSId`].OutputValue' --output text)
+CRON_LAMBDA_ARN=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" \
+  --query 'Stacks[0].Outputs[?OutputKey==`CronLambdaArn`].OutputValue' --output text 2>/dev/null || echo "")
+CRON_SCHEDULER_ROLE_ARN=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$REGION" \
+  --query 'Stacks[0].Outputs[?OutputKey==`CronSchedulerRoleArn`].OutputValue' --output text 2>/dev/null || echo "")
 
 success "Stack ready — EC2: $INSTANCE_ID | S3: $S3_BUCKET"
 
@@ -307,6 +334,13 @@ if [ -n "$EXISTING_RUNTIME" ] && [ "$EXISTING_RUNTIME" != "UNKNOWN" ]; then
     --agent-runtime-artifact "{\"containerConfiguration\":{\"containerUri\":\"${ECR_URI}:latest\"}}" \
     --role-arn "$EXECUTION_ROLE_ARN" \
     --network-configuration '{"networkMode":"PUBLIC"}' \
+    --protocol-configuration '{"serverProtocol":"HTTP"}' \
+    --lifecycle-configuration '{"idleRuntimeSessionTimeout":300,"maxLifetime":3600}' \
+    --environment-variables \
+      STACK_NAME="${STACK_NAME}",AWS_REGION="${REGION}",S3_BUCKET="${S3_BUCKET}",\
+BEDROCK_MODEL_ID="${MODEL}",DYNAMODB_TABLE="${DYNAMODB_TABLE}",DYNAMODB_REGION="${DYNAMODB_REGION}",\
+EVENTBRIDGE_SCHEDULE_GROUP="openclaw-cron",CRON_LAMBDA_ARN="${CRON_LAMBDA_ARN}",\
+EVENTBRIDGE_ROLE_ARN="${CRON_SCHEDULER_ROLE_ARN}",IDENTITY_TABLE_NAME="${DYNAMODB_TABLE}" \
     --region "$REGION" &>/dev/null || warn "  Runtime update failed — may need manual update in console"
   RUNTIME_ID="$EXISTING_RUNTIME"
 else
@@ -320,7 +354,9 @@ else
     --lifecycle-configuration '{"idleRuntimeSessionTimeout":300,"maxLifetime":3600}' \
     --environment-variables \
       STACK_NAME="${STACK_NAME}",AWS_REGION="${REGION}",S3_BUCKET="${S3_BUCKET}",\
-BEDROCK_MODEL_ID="${MODEL}",DYNAMODB_TABLE="${DYNAMODB_TABLE}",DYNAMODB_REGION="${DYNAMODB_REGION}" \
+BEDROCK_MODEL_ID="${MODEL}",DYNAMODB_TABLE="${DYNAMODB_TABLE}",DYNAMODB_REGION="${DYNAMODB_REGION}",\
+EVENTBRIDGE_SCHEDULE_GROUP="openclaw-cron",CRON_LAMBDA_ARN="${CRON_LAMBDA_ARN}",\
+EVENTBRIDGE_ROLE_ARN="${CRON_SCHEDULER_ROLE_ARN}",IDENTITY_TABLE_NAME="${DYNAMODB_TABLE}" \
     --region "$REGION" \
     --query 'agentRuntimeId' --output text)
 
@@ -337,7 +373,168 @@ aws ssm put-parameter \
   --value "$RUNTIME_ID" --type String --overwrite \
   --region "$REGION" &>/dev/null
 
+# Update ALL AgentCore runtimes to use new Docker image (not just the default one).
+# Production has 4 runtimes (Standard, Restricted, Engineering, Executive) —
+# all must point to the latest image after a Docker rebuild.
+info "  Updating all AgentCore runtimes to latest image..."
+ALL_RUNTIMES=$(aws bedrock-agentcore-control list-agent-runtimes \
+  --query 'agentRuntimes[*].agentRuntimeId' --output text --region "$REGION" 2>/dev/null || echo "")
+UPDATED=0
+for RT_ID in $ALL_RUNTIMES; do
+  [ -z "$RT_ID" ] && continue
+  [ "$RT_ID" = "$RUNTIME_ID" ] && continue  # already updated above
+  # Get existing role for this runtime (each tier may have a different execution role)
+  RT_ROLE=$(aws bedrock-agentcore-control get-agent-runtime \
+    --agent-runtime-id "$RT_ID" --query 'roleArn' --output text \
+    --region "$REGION" 2>/dev/null || echo "$EXECUTION_ROLE_ARN")
+  aws bedrock-agentcore-control update-agent-runtime \
+    --agent-runtime-id "$RT_ID" \
+    --agent-runtime-artifact "{\"containerConfiguration\":{\"containerUri\":\"${ECR_URI}:latest\"}}" \
+    --role-arn "$RT_ROLE" \
+    --network-configuration '{"networkMode":"PUBLIC"}' \
+    --region "$REGION" &>/dev/null && UPDATED=$((UPDATED+1)) || true
+done
+[ $UPDATED -gt 0 ] && info "  Updated $UPDATED additional runtime(s) to new image"
+
+# ── Step 4.5: Fargate Tier Services ──────────────────────────────────────────
+# Create ECS Fargate services for always-on deployment mode (one per security tier).
+# Services start with desiredCount=0 — admin enables per-position via Security Center.
+info "[4.5/8] Setting up Fargate tier services..."
+if [ "$SKIP_SERVICES" = "true" ]; then
+  info "  Skipping Fargate tier services (--skip-services)"
+else
+
+ECS_CLUSTER="${STACK_NAME}-always-on"
+BASE_TASK_DEF="${STACK_NAME}-always-on-agent"
+
+# Read network config from CloudFormation outputs
+SUBNET_ID=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+  --query "Stacks[0].Outputs[?OutputKey=='AlwaysOnSubnetId'].OutputValue" \
+  --output text --region "$REGION" 2>/dev/null || echo "")
+TASK_SG=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" \
+  --query "Stacks[0].Outputs[?OutputKey=='AlwaysOnTaskSecurityGroupId'].OutputValue" \
+  --output text --region "$REGION" 2>/dev/null || echo "")
+
+if [ -z "$SUBNET_ID" ] || [ "$SUBNET_ID" = "None" ]; then
+  warn "  Could not read SubnetId from stack outputs — Fargate setup skipped"
+  warn "  (Run CloudFormation update first, or set ECS_SUBNET_ID manually)"
+else
+  # Store ECS config in SSM for admin_always_on.py
+  aws ssm put-parameter --name "/openclaw/${STACK_NAME}/ecs/cluster-name" \
+    --value "$ECS_CLUSTER" --type String --overwrite --region "$REGION" &>/dev/null
+  aws ssm put-parameter --name "/openclaw/${STACK_NAME}/ecs/subnet-id" \
+    --value "$SUBNET_ID" --type String --overwrite --region "$REGION" &>/dev/null
+  [ -n "$TASK_SG" ] && [ "$TASK_SG" != "None" ] && \
+    aws ssm put-parameter --name "/openclaw/${STACK_NAME}/ecs/task-sg-id" \
+      --value "$TASK_SG" --type String --overwrite --region "$REGION" &>/dev/null
+
+  # Define tiers: name:model:guardrailId
+  # desiredCount=0 for all — admin activates via Security Center
+  for TIER_NAME in standard restricted engineering executive; do
+    SERVICE_NAME="${STACK_NAME}-tier-${TIER_NAME}"
+    TIER_FAMILY="${STACK_NAME}-tier-${TIER_NAME}"
+    case "$TIER_NAME" in
+      standard)    TIER_MODEL="${MODEL:-global.amazon.nova-2-lite-v1:0}"; TIER_GUARDRAIL="${GUARDRAIL_MODERATE_ID:-}" ;;
+      restricted)  TIER_MODEL="us.deepseek.r1-v1:0";                     TIER_GUARDRAIL="${GUARDRAIL_STRICT_ID:-}" ;;
+      engineering) TIER_MODEL="global.anthropic.claude-sonnet-4-5-20250929-v1:0"; TIER_GUARDRAIL="" ;;
+      executive)   TIER_MODEL="global.anthropic.claude-sonnet-4-6";       TIER_GUARDRAIL="" ;;
+    esac
+    # Build container environment JSON
+    TIER_ENV=$(cat <<ENVJSON
+
+
+[
+  {"name":"STACK_NAME","value":"${STACK_NAME}"},
+  {"name":"AWS_REGION","value":"${REGION}"},
+  {"name":"S3_BUCKET","value":"${S3_BUCKET}"},
+  {"name":"DYNAMODB_TABLE","value":"${DYNAMODB_TABLE:-$STACK_NAME}"},
+  {"name":"DYNAMODB_REGION","value":"${DYNAMODB_REGION:-$REGION}"},
+  {"name":"PORT","value":"8080"},
+  {"name":"EFS_ENABLED","value":"true"},
+  {"name":"SYNC_INTERVAL","value":"120"},
+  {"name":"BEDROCK_MODEL_ID","value":"${TIER_MODEL}"},
+  {"name":"GUARDRAIL_ID","value":"${TIER_GUARDRAIL}"},
+  {"name":"FARGATE_TIER","value":"${TIER_NAME}"},
+  {"name":"SHARED_AGENT_ID","value":"tier-${TIER_NAME}"}
+]
+ENVJSON
+)
+
+    # Get base task definition details
+    BASE_TD_ARN=$(aws ecs describe-task-definition --task-definition "$BASE_TASK_DEF" \
+      --query 'taskDefinition.taskDefinitionArn' --output text --region "$REGION" 2>/dev/null || echo "")
+
+    if [ -z "$BASE_TD_ARN" ] || [ "$BASE_TD_ARN" = "None" ]; then
+      warn "  Base task definition $BASE_TASK_DEF not found — tier $TIER_NAME skipped"
+      continue
+    fi
+
+    # Register new task definition revision for this tier
+    aws ecs register-task-definition \
+      --family "$TIER_FAMILY" \
+      --task-role-arn "$(aws ecs describe-task-definition --task-definition "$BASE_TASK_DEF" \
+        --query 'taskDefinition.taskRoleArn' --output text --region "$REGION")" \
+      --execution-role-arn "$(aws ecs describe-task-definition --task-definition "$BASE_TASK_DEF" \
+        --query 'taskDefinition.executionRoleArn' --output text --region "$REGION")" \
+      --network-mode awsvpc \
+      --requires-compatibilities FARGATE \
+      --cpu "512" --memory "1024" \
+      --runtime-platform cpuArchitecture=ARM64,operatingSystemFamily=LINUX \
+      --container-definitions "$(aws ecs describe-task-definition --task-definition "$BASE_TASK_DEF" \
+        --query 'taskDefinition.containerDefinitions' --output json --region "$REGION" \
+        | python3 -c "
+import sys, json
+defs = json.load(sys.stdin)
+env = json.loads('''${TIER_ENV}''')
+for d in defs:
+    if d.get('name') == 'always-on-agent':
+        d['environment'] = env
+        for k in ['cpu','status','taskDefinitionArn','containerInstanceArn','networkBindings','requiredAttributes']:
+            d.pop(k, None)
+print(json.dumps(defs))
+")" \
+      --volumes "$(aws ecs describe-task-definition --task-definition "$BASE_TASK_DEF" \
+        --query 'taskDefinition.volumes' --output json --region "$REGION")" \
+      --region "$REGION" &>/dev/null \
+      && info "  Registered task definition: $TIER_FAMILY" \
+      || warn "  Failed to register task definition: $TIER_FAMILY"
+
+    # Create ECS Service (if not exists) with desiredCount=0
+    EXISTING_SVC=$(aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$SERVICE_NAME" \
+      --query 'services[?status==`ACTIVE`].serviceName' --output text --region "$REGION" 2>/dev/null || echo "")
+
+    if [ -z "$EXISTING_SVC" ] || [ "$EXISTING_SVC" = "None" ]; then
+      aws ecs create-service \
+        --cluster "$ECS_CLUSTER" \
+        --service-name "$SERVICE_NAME" \
+        --task-definition "$TIER_FAMILY" \
+        --desired-count 0 \
+        --launch-type FARGATE \
+        --network-configuration "awsvpcConfiguration={subnets=[$SUBNET_ID],securityGroups=[$TASK_SG],assignPublicIp=ENABLED}" \
+        --tags "key=tier,value=$TIER_NAME" "key=stack,value=$STACK_NAME" \
+        --region "$REGION" &>/dev/null \
+        && info "  Created service: $SERVICE_NAME (desiredCount=0)" \
+        || warn "  Failed to create service: $SERVICE_NAME"
+    else
+      # Update existing service with new task definition
+      aws ecs update-service \
+        --cluster "$ECS_CLUSTER" \
+        --service "$SERVICE_NAME" \
+        --task-definition "$TIER_FAMILY" \
+        --region "$REGION" &>/dev/null \
+        && info "  Updated service: $SERVICE_NAME" \
+        || warn "  Failed to update service: $SERVICE_NAME"
+    fi
+  done
+
+  success "Fargate tier services configured (desiredCount=0, activate via Security Center)"
+  fi
+fi
+
 # ── Step 5: Upload SOUL templates and knowledge docs ──────────────────────────
+# SOUL architecture: workspace_assembler.py merges Global + Position + PERSONAL_SOUL.md
+# into SOUL.md (single write). server.py does NOT modify SOUL.md.
+# Per-employee PERSONAL_SOUL.md is seeded by seed_workspaces.py (Step 6).
 info "[5/8] Uploading templates and knowledge to S3..."
 
 export AWS_REGION="$REGION"
@@ -366,6 +563,53 @@ if [ -d "$SOUL_TEMPLATES/positions" ]; then
 fi
 
 success "Templates uploaded to s3://${S3_BUCKET}/"
+
+# ── Step 5.5: Deploy Cron Lambda code ────────────────────────────────────────
+if [ -n "$CRON_LAMBDA_ARN" ] && [ "$CRON_LAMBDA_ARN" != "None" ]; then
+  info "[5.5/8] Deploying Cron Lambda code..."
+  CRON_LAMBDA_DIR="$SCRIPT_DIR/lambda/cron"
+  if [ -f "$CRON_LAMBDA_DIR/index.py" ]; then
+    CRON_ZIP="/tmp/cron-lambda-$$.zip"
+    (cd "$CRON_LAMBDA_DIR" && zip -q "$CRON_ZIP" index.py)
+    CRON_FUNCTION_NAME="${STACK_NAME}-cron-executor"
+
+    # Read AGENTCORE_RUNTIME_ARN from SSM (runtime-id → ARN)
+    AGENTCORE_RUNTIME_ARN="arn:aws:bedrock-agentcore:${REGION}:${ACCOUNT_ID}:runtime/${RUNTIME_ID}"
+
+    # Update Lambda code
+    aws lambda update-function-code \
+      --function-name "$CRON_FUNCTION_NAME" \
+      --zip-file "fileb://$CRON_ZIP" \
+      --region "$REGION" &>/dev/null \
+      && success "  Cron Lambda code deployed" \
+      || warn "  Cron Lambda code update failed"
+
+    # Wait for update to complete before updating config
+    aws lambda wait function-updated \
+      --function-name "$CRON_FUNCTION_NAME" \
+      --region "$REGION" 2>/dev/null || sleep 5
+
+    # Update Lambda environment variables
+    aws lambda update-function-configuration \
+      --function-name "$CRON_FUNCTION_NAME" \
+      --environment "Variables={DYNAMODB_TABLE=${DYNAMODB_TABLE},AWS_REGION=${REGION},AGENTCORE_RUNTIME_ARN=${AGENTCORE_RUNTIME_ARN},AGENTCORE_QUALIFIER=DEFAULT,LAMBDA_TIMEOUT_SECONDS=600}" \
+      --region "$REGION" &>/dev/null \
+      && success "  Cron Lambda config updated" \
+      || warn "  Cron Lambda config update failed"
+
+    # Store cron config in SSM for container env derivation
+    aws ssm put-parameter --name "/openclaw/${STACK_NAME}/cron/lambda-arn" \
+      --value "$CRON_LAMBDA_ARN" --type String --overwrite --region "$REGION" &>/dev/null
+    aws ssm put-parameter --name "/openclaw/${STACK_NAME}/cron/scheduler-role-arn" \
+      --value "$CRON_SCHEDULER_ROLE_ARN" --type String --overwrite --region "$REGION" &>/dev/null
+
+    rm -f "$CRON_ZIP"
+  else
+    warn "  lambda/cron/index.py not found — skipping cron Lambda deploy"
+  fi
+else
+  info "[5.5/8] Cron Lambda not found in stack outputs — skipping (run CloudFormation update first)"
+fi
 
 # ── Step 6: DynamoDB table + Seed ─────────────────────────────────────────────
 # Create table if it doesn't exist (idempotent — no-op if already created)
@@ -439,6 +683,9 @@ else
   AWS_REGION="$DYNAMODB_REGION" $SEED_PYTHON seed_settings.py --table "$DYNAMODB_TABLE" --region "$DYNAMODB_REGION" 2>/dev/null && \
     success "  Settings seeded" || warn "  seed_settings.py skipped (not found)"
 
+  AWS_REGION="$DYNAMODB_REGION" $SEED_PYTHON seed_knowledge.py --table "$DYNAMODB_TABLE" --region "$DYNAMODB_REGION" 2>/dev/null && \
+    success "  Knowledge base metadata seeded" || warn "  seed_knowledge.py skipped"
+
   AWS_REGION="$REGION" S3_BUCKET="$S3_BUCKET" \
     $SEED_PYTHON seed_knowledge_docs.py --bucket "$S3_BUCKET" --region "$REGION" && \
     success "  Knowledge docs uploaded"
@@ -494,6 +741,9 @@ ECS_TASK_DEF=${ECS_TASK_DEF}
 ECS_TASK_SG=${ECS_TASK_SG}
 ECS_SUBNET=${ECS_SUBNET}
 EFS_ID=${EFS_ID}
+ADMIN_PASSWORD=${ADMIN_PASSWORD}
+CRON_LAMBDA_ARN=${CRON_LAMBDA_ARN}
+CRON_SCHEDULER_ROLE_ARN=${CRON_SCHEDULER_ROLE_ARN}
 ENVEOF
 aws s3 cp "$ENV_TMPFILE" "s3://${S3_BUCKET}/_deploy/env" --region "$REGION" --quiet
 rm -f "$ENV_TMPFILE"
@@ -609,7 +859,8 @@ echo "     aws ssm start-session --target $INSTANCE_ID --region $REGION \\"
 echo "       --document-name AWS-StartPortForwardingSession \\"
 echo "       --parameters 'portNumber=8099,localPortNumber=8099'"
 echo "     → Open http://localhost:8099"
-echo "     → Login: emp-jiade / password: (your ADMIN_PASSWORD)"
+echo "     → Login with your seeded admin employee ID / password: (your ADMIN_PASSWORD)"
+echo "     → First login requires setting a personal password"
 echo ""
 echo "  Connect IM bots (one-time, in OpenClaw Gateway UI):"
 echo "     aws ssm start-session --target $INSTANCE_ID --region $REGION \\"

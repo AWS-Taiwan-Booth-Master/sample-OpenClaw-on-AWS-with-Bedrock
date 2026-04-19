@@ -65,8 +65,13 @@ def ssm_client():
 
 # ── Config version ──────────────────────────────────────────────────────
 def bump_config_version() -> None:
-    """Write a new CONFIG#global-version to DynamoDB.
-    Agent-container/server.py polls this every 5 minutes."""
+    """Write a new CONFIG#global-version to DynamoDB, then immediately
+    notify all running Fargate containers to refresh their workspace cache.
+
+    Two propagation paths:
+    - Fargate (instant): POST /admin/refresh-all to each running tier container
+    - AgentCore (5 min): server.py polls config_version every 5 minutes
+    """
     try:
         import db
         version = datetime.now(timezone.utc).isoformat()
@@ -79,13 +84,61 @@ def bump_config_version() -> None:
     except Exception as e:
         print(f"[config-version] bump failed (non-fatal): {e}")
 
+    # Instant propagation to Fargate containers (fire-and-forget, non-blocking)
+    import threading as _thr_cv
+    _thr_cv.Thread(target=_refresh_all_fargate_tiers, daemon=True).start()
+
+
+def _refresh_all_fargate_tiers() -> None:
+    """POST /admin/refresh-all to every running Fargate tier container.
+    Called after bump_config_version() for instant config propagation."""
+    import requests as _req_refresh
+    tiers = ("standard", "restricted", "engineering", "executive")
+    for tier in tiers:
+        try:
+            endpoint = ssm_client().get_parameter(
+                Name=f"/openclaw/{STACK_NAME}/fargate/tier-{tier}/endpoint"
+            )["Parameter"]["Value"]
+            r = _req_refresh.post(f"{endpoint}/admin/refresh-all", timeout=5)
+            if r.status_code == 200:
+                data = r.json()
+                logger.info("[config-propagation] tier-%s refreshed: %s", tier, data)
+            else:
+                logger.warning("[config-propagation] tier-%s returned %d", tier, r.status_code)
+        except _req_refresh.exceptions.ConnectionError:
+            pass  # tier not running — skip silently
+        except Exception as e:
+            logger.warning("[config-propagation] tier-%s failed: %s", tier, e)
+
 
 # ── StopRuntimeSession helper ──────────────────────────────────────────
 def stop_employee_session(emp_id: str) -> dict:
-    """Call Tenant Router /stop-session to force agent workspace refresh."""
+    """Force agent workspace refresh for an employee.
+
+    Two modes based on the employee's position deployMode:
+    - Fargate: POST /admin/refresh to the Fargate container (clears workspace cache,
+      no container restart needed — next invocation re-assembles workspace).
+    - Serverless (AgentCore): POST /stop-session to Tenant Router (kills the microVM,
+      next invocation triggers full cold start).
+    """
+    import requests as _req_stop
+
+    # Check if this employee's position uses Fargate
+    try:
+        import db as _db_stop
+        emp = _db_stop.get_employee(emp_id)
+        if emp:
+            pos_id = emp.get("positionId", "")
+            if pos_id:
+                pos = _db_stop.get_position(pos_id)
+                if pos and pos.get("deployMode") == "fargate":
+                    return _refresh_fargate_agent(emp_id, pos.get("fargateTier", ""))
+    except Exception as e:
+        logger.warning("[stop-session] Fargate check failed, falling back to AgentCore: %s", e)
+
+    # AgentCore mode: call Tenant Router to kill microVM
     router_url = os.environ.get("TENANT_ROUTER_URL", "http://localhost:8090")
     try:
-        import requests as _req_stop
         r = _req_stop.post(f"{router_url}/stop-session",
                           json={"emp_id": emp_id}, timeout=30)
         return r.json() if r.status_code == 200 else {"error": r.text}
@@ -94,11 +147,53 @@ def stop_employee_session(emp_id: str) -> dict:
         return {"error": str(e)}
 
 
+def _refresh_fargate_agent(emp_id: str, tier_name: str = "") -> dict:
+    """Refresh a Fargate-hosted agent by calling the container's /admin/refresh endpoint.
+    This clears the workspace assembly cache without restarting the container."""
+    import requests as _req_fg
+
+    # Resolve tier endpoint from SSM
+    if not tier_name:
+        tier_name = "standard"
+    try:
+        endpoint = ssm_client().get_parameter(
+            Name=f"/openclaw/{STACK_NAME}/fargate/tier-{tier_name}/endpoint"
+        )["Parameter"]["Value"]
+    except Exception:
+        # Fallback: try per-agent always-on endpoint
+        try:
+            agent_id = ssm_client().get_parameter(
+                Name=f"/openclaw/{STACK_NAME}/tenants/{emp_id}/always-on-agent"
+            )["Parameter"]["Value"]
+            endpoint = ssm_client().get_parameter(
+                Name=f"/openclaw/{STACK_NAME}/always-on/{agent_id}/endpoint"
+            )["Parameter"]["Value"]
+        except Exception:
+            return {"error": f"No Fargate endpoint found for tier {tier_name}"}
+
+    try:
+        r = _req_fg.post(f"{endpoint}/admin/refresh",
+                        json={"emp_id": emp_id}, timeout=10)
+        result = r.json() if r.status_code == 200 else {"error": r.text}
+        logger.info("[refresh-fargate] %s → %s: %s", emp_id, endpoint, result)
+        return result
+    except Exception as e:
+        logger.warning("[refresh-fargate] Failed for %s: %s", emp_id, e)
+        return {"error": str(e)}
+
+
 # ── Auth helpers ──────────────────────────────────────────────────────────
-# Direct implementation — no lazy proxy needed.
+# Two layers:
+#   1. Middleware (main.py) — enforces auth on all /api/ paths except whitelist.
+#      Attaches request.state.user for downstream use.
+#   2. These helpers — used by routers for role checks and dept scoping.
+#      require_auth() still works as a fallback for endpoints that need to
+#      extract the user when not using Depends.
 
 def require_auth(authorization: str):
-    """Validate JWT and return UserContext. Raises HTTPException on failure."""
+    """Validate JWT and return UserContext. Raises HTTPException on failure.
+    Note: with the auth middleware in place, this is redundant for /api/ paths
+    but kept for backward compatibility and non-middleware contexts."""
     from fastapi import HTTPException
     import auth as _authmod
     user = _authmod.get_user_from_request(authorization)
@@ -135,3 +230,38 @@ def get_dept_scope(user) -> Optional[set]:
                 ids.add(d["id"])
                 queue.append(d["id"])
     return ids
+
+
+# ── FastAPI Dependencies (Depends) ────────────────────────────────────────
+# Use these in router endpoints: def my_endpoint(user = Depends(get_current_user))
+
+def audit_soul_change(user, layer: str, target_id: str, content_len: int, action: str = "edit"):
+    """Create audit entry for any SOUL layer change.
+    Called by agents.py save_agent_soul, security.py put_global_soul/put_position_soul."""
+    import db as _db_audit
+    from datetime import datetime as _dt_audit, timezone as _tz_audit
+    _db_audit.create_audit_entry({
+        "timestamp": _dt_audit.now(_tz_audit.utc).isoformat(),
+        "eventType": "soul_change",
+        "actorId": user.employee_id,
+        "actorName": user.name,
+        "targetType": "soul",
+        "targetId": target_id,
+        "detail": f"SOUL {layer} layer {action}: {target_id} ({content_len} chars)",
+        "status": "success",
+    })
+
+
+def get_current_user(request):
+    """FastAPI Depends: extract user from request.state (set by auth middleware).
+    Returns UserContext or None. Does NOT raise — use for optional auth contexts."""
+    return getattr(request.state, "user", None)
+
+def get_dept_filter(request) -> Optional[set]:
+    """FastAPI Depends: return department ID set for the current user.
+    Admin → None (no filter). Manager → BFS sub-departments. Employee → empty set.
+    Usage: def endpoint(scope = Depends(get_dept_filter))"""
+    user = getattr(request.state, "user", None)
+    if not user:
+        return set()
+    return get_dept_scope(user)

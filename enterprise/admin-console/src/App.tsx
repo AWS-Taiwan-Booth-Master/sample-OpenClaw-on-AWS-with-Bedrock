@@ -15,7 +15,8 @@ import Employees from './pages/Organization/Employees';
 import AgentList from './pages/AgentFactory/AgentList';
 import AgentDetail from './pages/AgentFactory/AgentDetail';
 import SoulEditor from './pages/AgentFactory/SoulEditor';
-import SkillCatalog from './pages/Skills/SkillCatalog';
+import ToolsSkills from './pages/ToolsSkills';
+import ToolsSkillsDetail from './pages/ToolsSkills/Detail';
 import Bindings from './pages/Bindings';
 import IMChannels from './pages/IMChannels';
 import Monitor from './pages/Monitor/index';
@@ -28,6 +29,9 @@ import Approvals from './pages/Approvals';
 import KnowledgeBase from './pages/Knowledge/index';
 import Workspace from './pages/Workspace/index';
 
+// Auth flow pages
+import ForceChangePassword from './pages/ForceChangePassword';
+
 // Public pages (no auth required)
 import TwinChat from './pages/TwinChat';
 
@@ -38,6 +42,7 @@ import PortalMyUsage from './pages/portal/MyUsage';
 import PortalMySkills from './pages/portal/MySkills';
 import PortalMyRequests from './pages/portal/MyRequests';
 import PortalBindIM from './pages/portal/BindIM';
+import PortalMyAgents from './pages/portal/MyAgents';
 
 function AppRoutes() {
   const { user, loading } = useAuth();
@@ -53,6 +58,18 @@ function AppRoutes() {
     );
   }
 
+  // Force password change gate — blocks all navigation until password is set
+  if (user?.mustChangePassword) {
+    return (
+      <Routes>
+        <Route path="/change-password" element={<ForceChangePassword />} />
+        <Route path="/login" element={<Login />} />
+        <Route path="/twin/:token" element={<TwinChat />} />
+        <Route path="*" element={<Navigate to="/change-password" replace />} />
+      </Routes>
+    );
+  }
+
   return (
     <Routes>
       <Route path="/login" element={user ? <Navigate to={user.role === 'employee' ? '/portal' : '/dashboard'} replace /> : <Login />} />
@@ -64,6 +81,7 @@ function AppRoutes() {
       <Route path="/portal/skills" element={user ? <PortalLayout><PortalMySkills /></PortalLayout> : <Navigate to="/login" replace />} />
       <Route path="/portal/requests" element={user ? <PortalLayout><PortalMyRequests /></PortalLayout> : <Navigate to="/login" replace />} />
       <Route path="/portal/channels" element={user ? <PortalLayout><PortalBindIM /></PortalLayout> : <Navigate to="/login" replace />} />
+      <Route path="/portal/agents" element={user ? <PortalLayout><PortalMyAgents /></PortalLayout> : <Navigate to="/login" replace />} />
 
       {/* Admin/Manager Console */}
       <Route path="/" element={user ? <Navigate to={user.role === 'employee' ? '/portal' : '/dashboard'} replace /> : <Navigate to="/login" replace />} />
@@ -75,7 +93,8 @@ function AppRoutes() {
       <Route path="/agents/:agentId" element={user && user.role !== 'employee' ? <Layout><AgentDetail /></Layout> : <Navigate to="/login" replace />} />
       <Route path="/agents/:agentId/soul" element={user && user.role !== 'employee' ? <Layout><SoulEditor /></Layout> : <Navigate to="/login" replace />} />
       <Route path="/workspace" element={user && user.role !== 'employee' ? <Layout><Workspace /></Layout> : <Navigate to="/login" replace />} />
-      <Route path="/skills" element={user && user.role !== 'employee' ? <Layout><SkillCatalog /></Layout> : <Navigate to="/login" replace />} />
+      <Route path="/skills" element={user && user.role !== 'employee' ? <Layout><ToolsSkills /></Layout> : <Navigate to="/login" replace />} />
+      <Route path="/skills/:itemId" element={user && user.role !== 'employee' ? <Layout><ToolsSkillsDetail /></Layout> : <Navigate to="/login" replace />} />
       <Route path="/knowledge" element={user && user.role !== 'employee' ? <Layout><KnowledgeBase /></Layout> : <Navigate to="/login" replace />} />
       <Route path="/bindings" element={user && user.role !== 'employee' ? <Layout><Bindings /></Layout> : <Navigate to="/login" replace />} />
       <Route path="/channels" element={user && user.role !== 'employee' ? <Layout><IMChannels /></Layout> : <Navigate to="/login" replace />} />

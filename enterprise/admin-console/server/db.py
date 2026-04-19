@@ -31,8 +31,8 @@ def _clean(item: dict) -> dict:
     """Convert Decimal to float/int for JSON serialization."""
     cleaned = {}
     for k, v in item.items():
-        if k in ("PK", "SK", "GSI1PK", "GSI1SK"):
-            continue  # strip DynamoDB keys from response
+        if k in ("PK", "SK", "GSI1PK", "GSI1SK", "passwordHash"):
+            continue  # strip DynamoDB keys and sensitive fields from response
         if isinstance(v, Decimal):
             cleaned[k] = int(v) if v == int(v) else float(v)
         elif isinstance(v, dict):
@@ -67,9 +67,20 @@ def _get_item(sk: str) -> Optional[dict]:
         return None
 
 
+def _sanitize_floats(obj):
+    """Convert Python floats to Decimal for DynamoDB compatibility."""
+    from decimal import Decimal
+    if isinstance(obj, float):
+        return Decimal(str(obj))
+    if isinstance(obj, dict):
+        return {k: _sanitize_floats(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_floats(v) for v in obj]
+    return obj
+
 def _put_item(sk: str, data: dict, gsi1pk: str = "", gsi1sk: str = ""):
     """Put an item."""
-    item = {"PK": ORG_PK, "SK": sk, **data}
+    item = _sanitize_floats({"PK": ORG_PK, "SK": sk, **data})
     if gsi1pk:
         item["GSI1PK"] = gsi1pk
     if gsi1sk:
@@ -80,6 +91,98 @@ def _put_item(sk: str, data: dict, gsi1pk: str = "", gsi1sk: str = ""):
     except ClientError as e:
         print(f"[db] DynamoDB put error: {e}")
         return False
+
+
+def _make_put(sk: str, data: dict, gsi1pk: str = "", gsi1sk: str = "") -> dict:
+    """Build a TransactWriteItem Put dict (does NOT write — used by transact_write)."""
+    item = {"PK": ORG_PK, "SK": sk, **data}
+    if gsi1pk:
+        item["GSI1PK"] = gsi1pk
+    if gsi1sk:
+        item["GSI1SK"] = gsi1sk
+    # Convert floats to Decimal (required by DynamoDB)
+    item = _decimalize(item)
+    return {"Put": {"TableName": TABLE_NAME, "Item": item}}
+
+
+def _decimalize(obj):
+    """Recursively convert float → Decimal for DynamoDB compatibility."""
+    if isinstance(obj, float):
+        return Decimal(str(obj))
+    if isinstance(obj, dict):
+        return {k: _decimalize(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_decimalize(i) for i in obj]
+    return obj
+
+
+def transact_write(items: list[dict]) -> bool:
+    """Atomic write of multiple items using DynamoDB TransactWriteItems.
+    Each item in the list must be a TransactWriteItem dict (from _make_put).
+    All items succeed or all fail — no partial state.
+    Max 100 items per transaction (DynamoDB limit)."""
+    if not items:
+        return True
+    if len(items) > 100:
+        raise ValueError(f"TransactWriteItems supports max 100 items, got {len(items)}")
+    try:
+        from boto3.dynamodb.types import TypeSerializer
+        serializer = TypeSerializer()
+        # Convert resource-format items to low-level DynamoDB JSON
+        low_level_items = []
+        for item in items:
+            put = item.get("Put", {})
+            table_name = put.get("TableName", TABLE_NAME)
+            raw_item = put.get("Item", {})
+            # Serialize each attribute value to DynamoDB JSON format
+            ddb_item = {}
+            for k, v in raw_item.items():
+                if v is None:
+                    continue  # skip None values
+                ddb_item[k] = serializer.serialize(v)
+            low_level_items.append({"Put": {"TableName": table_name, "Item": ddb_item}})
+        client = boto3.client("dynamodb", region_name=AWS_REGION)
+        client.transact_write_items(TransactItems=low_level_items)
+        return True
+    except ClientError as e:
+        print(f"[db] transact_write failed: {e}")
+        return False
+    except Exception as e:
+        print(f"[db] transact_write error: {e}")
+        return False
+
+
+def provision_employee_atomic(
+    agent_data: dict,
+    binding_data: dict,
+    emp_update: dict,
+    audit_data: dict,
+) -> bool:
+    """Atomic provisioning: create agent + binding + update employee + audit in one transaction.
+    If any write fails, ALL are rolled back — no orphaned agents or bindings.
+    S3 workspace seeding happens AFTER this succeeds (S3 has no transactional support)."""
+    agent_id = agent_data.get("id", f"agent-{int(__import__('time').time())}")
+    agent_data["id"] = agent_id
+    if "qualityScore" in agent_data and agent_data["qualityScore"] is not None:
+        agent_data["qualityScore"] = str(agent_data["qualityScore"])
+
+    bind_id = binding_data.get("id", f"bind-{int(__import__('time').time())}")
+    binding_data["id"] = bind_id
+    bind_agent = binding_data.get("agentId", agent_id)
+
+    audit_id = audit_data.get("id", f"aud-{int(__import__('time').time())}")
+    audit_data["id"] = audit_id
+
+    emp_id = emp_update.get("id", "")
+
+    items = [
+        _make_put(f"AGENT#{agent_id}", agent_data, "TYPE#agent", f"AGENT#{agent_id}"),
+        _make_put(f"BIND#{bind_id}", binding_data, f"AGENT#{bind_agent}", f"BIND#{bind_id}"),
+        _make_put(f"EMP#{emp_id}", emp_update, "TYPE#employee", f"EMP#{emp_id}"),
+        _make_put(f"AUDIT#{audit_id}", audit_data, "TYPE#audit", f"AUDIT#{audit_id}"),
+    ]
+
+    return transact_write(items)
 
 
 # === Public API ===
@@ -98,6 +201,25 @@ def get_employees() -> list[dict]:
 
 def get_employee(emp_id: str) -> Optional[dict]:
     return _get_item(f"EMP#{emp_id}")
+
+def get_employee_with_password(emp_id: str) -> Optional[dict]:
+    """Get employee including passwordHash (for auth only). Do not expose in API responses."""
+    try:
+        resp = _get_table().get_item(Key={"PK": ORG_PK, "SK": f"EMP#{emp_id}"})
+        item = resp.get("Item")
+        if not item:
+            return None
+        cleaned = {}
+        for k, v in item.items():
+            if k in ("PK", "SK", "GSI1PK", "GSI1SK"):
+                continue
+            if isinstance(v, Decimal):
+                cleaned[k] = int(v) if v == int(v) else float(v)
+            else:
+                cleaned[k] = v
+        return cleaned
+    except ClientError:
+        return None
 
 def add_employee_channel(emp_id: str, channel: str) -> None:
     """Add a channel to the employee's channels list (idempotent)."""
@@ -157,6 +279,10 @@ def update_agent(agent_id: str, updates: dict) -> Optional[dict]:
     item["id"] = agent_id
     _put_item(f"AGENT#{agent_id}", item, "TYPE#agent", f"AGENT#{agent_id}")
     return item
+
+def delete_agent(agent_id: str) -> bool:
+    return _delete_item(f"AGENT#{agent_id}")
+
 
 def get_bindings() -> list[dict]:
     return _query("BIND#")

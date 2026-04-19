@@ -4,6 +4,7 @@ import type { ApexOptions } from 'apexcharts';
 import { BarChart3, Zap, DollarSign, Clock } from 'lucide-react';
 import { api } from '../../api/client';
 import { Card, StatCard } from '../../components/ui';
+import { usePortalAgent } from '../../contexts/PortalAgentContext';
 
 const chartOpts: ApexOptions = {
   chart: { type: 'bar', toolbar: { show: false }, background: 'transparent' },
@@ -17,11 +18,12 @@ const chartOpts: ApexOptions = {
 };
 
 export default function MyUsage() {
+  const { agentType } = usePortalAgent();
   const [data, setData] = useState<any>(null);
 
   useEffect(() => {
-    api.get<any>('/portal/usage').then(setData).catch(() => {});
-  }, []);
+    api.get<any>(`/portal/usage?agent_type=${agentType}`).then(setData).catch(() => {});
+  }, [agentType]);
 
   if (!data) return <div className="p-6 text-text-muted">Loading...</div>;
 
@@ -32,10 +34,10 @@ export default function MyUsage() {
       <h1 className="text-xl font-bold text-text-primary">My Usage</h1>
 
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        <StatCard title="Requests" value={data.totalRequests} icon={<Zap size={22} />} color="primary" />
-        <StatCard title="Tokens" value={`${((data.totalInputTokens + data.totalOutputTokens) / 1000).toFixed(0)}k`} icon={<BarChart3 size={22} />} color="info" />
-        <StatCard title="Cost" value={`$${data.totalCost.toFixed(2)}`} icon={<DollarSign size={22} />} color="success" />
-        <StatCard title="Avg/Day" value={daily.length > 0 ? Math.round(data.totalRequests / daily.length) : 0} icon={<Clock size={22} />} color="cyan" />
+        <StatCard title="Requests" value={data.totalRequests || 0} icon={<Zap size={22} />} color="primary" />
+        <StatCard title="Tokens" value={`${(((data.totalInputTokens || 0) + (data.totalOutputTokens || 0)) / 1000).toFixed(0)}k`} icon={<BarChart3 size={22} />} color="info" />
+        <StatCard title="Cost" value={`$${(data.totalCost || 0).toFixed(2)}`} icon={<DollarSign size={22} />} color="success" />
+        <StatCard title="Avg/Day" value={daily.length > 0 ? Math.round((data.totalRequests || 0) / daily.length) : 0} icon={<Clock size={22} />} color="cyan" />
       </div>
 
       <Card>
@@ -55,7 +57,7 @@ export default function MyUsage() {
               <span className="text-sm text-text-secondary">{d.date}</span>
               <div className="flex items-center gap-4">
                 <span className="text-xs text-text-muted">{d.requests} requests</span>
-                <span className="text-sm font-medium text-text-primary">${d.cost.toFixed(4)}</span>
+                <span className="text-sm font-medium text-text-primary">${(d.cost || 0).toFixed(4)}</span>
               </div>
             </div>
           ))}

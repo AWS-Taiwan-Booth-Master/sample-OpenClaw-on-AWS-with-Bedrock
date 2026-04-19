@@ -274,7 +274,7 @@ function ChannelConnections({ channel, connections, channelStatus, onRevoke, ins
           <ol className="text-xs text-text-muted space-y-1 list-decimal list-inside">
             <li>SSM into EC2: <code className="bg-dark-hover px-1 rounded">aws ssm start-session --target {instanceId} --region {region}</code></li>
             <li>Switch user: <code className="bg-dark-hover px-1 rounded">sudo su - ubuntu</code></li>
-            <li>Add channel: <code className="bg-dark-hover px-1 rounded">openclaw channels add {channel} --token YOUR_BOT_TOKEN</code></li>
+            <li>Add channel: <code className="bg-dark-hover px-1 rounded">openclaw channels add --channel {channel} --token YOUR_BOT_TOKEN</code></li>
             <li>Verify: <code className="bg-dark-hover px-1 rounded">openclaw channels list</code></li>
             <li>Come back here and click <strong>Refresh</strong> to confirm status</li>
           </ol>
@@ -436,7 +436,7 @@ export default function IMChannels() {
               </div>
               <p className="text-xs text-text-muted">
                 Use the OpenClaw CLI to add a channel:
-                <code className="bg-dark-hover px-1 rounded block mt-1">openclaw channels add telegram --token YOUR_BOT_TOKEN</code>
+                <code className="bg-dark-hover px-1 rounded block mt-1">openclaw channels add --channel telegram --token YOUR_BOT_TOKEN</code>
                 Repeat for each platform. Run <code className="bg-dark-hover px-1 rounded">openclaw channels list</code> to verify.
               </p>
             </div>

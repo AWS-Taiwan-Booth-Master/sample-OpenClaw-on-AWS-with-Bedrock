@@ -209,7 +209,11 @@ export default function Positions() {
   const deptOptions = DEPARTMENTS.filter(d => !d.parentId).map(d => ({ label: d.name, value: d.id }));
   const totalMembers = POSITIONS.reduce((s, p) => s + (p.memberCount || 0), 0);
   const totalUnbound = EMPLOYEES.filter(e => !e.agentId).length;
-  const emptySoulCount = POSITIONS.filter(p => !p.soulTemplate?.trim()).length;
+  // SOUL files are now in S3, not in DynamoDB soulTemplate field.
+  // A position is "configured" if it has a toolAllowlist (Plan A set up in Security Center).
+  // Every position with a SOUL file in S3 is considered configured.
+  const configuredCount = POSITIONS.filter(p => p.toolAllowlist?.length > 0 || p.soulTemplate?.trim()).length;
+  const emptySoulCount = POSITIONS.length - configuredCount;
 
   const getProvisionStats = (posId: string) => {
     const posEmps = EMPLOYEES.filter(e => e.positionId === posId);
@@ -270,7 +274,7 @@ export default function Positions() {
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4 mb-6">
         <StatCard title="Positions" value={POSITIONS.length} icon={<Briefcase size={22} />} color="primary" />
         <StatCard title="Total Members" value={totalMembers} icon={<Users size={22} />} color="info" />
-        <StatCard title="Active Agents" value={AGENTS.length} icon={<Bot size={22} />} color="success" />
+        <StatCard title="Total Agents" value={AGENTS.length} icon={<Bot size={22} />} color="success" />
         <StatCard title="SOUL Configured" value={POSITIONS.length - emptySoulCount} subtitle={`of ${POSITIONS.length} positions`} icon={<FileText size={22} />} color={emptySoulCount > 0 ? 'warning' : 'success'} />
       </div>
 
@@ -281,9 +285,6 @@ export default function Positions() {
           )},
           { key: 'dept', label: 'Department', render: (p: Position) => <span className="text-text-secondary">{p.departmentName}</span> },
           { key: 'soul', label: 'SOUL', render: (p: Position) => <SoulStatusBadge text={p.soulTemplate} /> },
-          { key: 'channel', label: 'Channel', render: (p: Position) => (
-            <Badge color="info">{CHANNEL_LABELS[(p.defaultChannel || 'slack') as ChannelType]}</Badge>
-          )},
           { key: 'skills', label: 'Skills', render: (p: Position) => (
             <div className="flex flex-wrap gap-1">
               {(p.defaultSkills || []).slice(0, 3).map(s => <Badge key={s} color="success">{s}</Badge>)}
@@ -330,7 +331,7 @@ export default function Positions() {
                 <div><p className="text-xs text-text-muted">Department</p><p className="text-sm font-medium">{selected.departmentName}</p></div>
                 <div><p className="text-xs text-text-muted">Members</p><p className="text-sm font-medium">{stats.total}</p></div>
                 <div><p className="text-xs text-text-muted">Agents Bound</p><p className="text-sm font-medium text-green-400">{stats.bound}</p></div>
-                <div><p className="text-xs text-text-muted">Default Channel</p><Badge color="info">{CHANNEL_LABELS[(selected.defaultChannel || 'slack') as ChannelType]}</Badge></div>
+                <div><p className="text-xs text-text-muted">Unbound</p><p className="text-sm font-medium text-warning">{stats.unbound}</p></div>
               </div>
 
               {/* Provision prompt */}
@@ -478,8 +479,7 @@ export default function Positions() {
             const dept = DEPARTMENTS.find(d => d.id === v);
             setEditingPos({ ...editingPos, departmentId: v, departmentName: dept?.name || '' });
           }} options={DEPARTMENTS.filter(d => !d.parentId).map(d => ({ label: d.name, value: d.id }))} />
-          <Select label="Default Channel" value={editingPos.defaultChannel || 'slack'} onChange={v => setEditingPos({ ...editingPos, defaultChannel: v as any })}
-            options={[{label:'Slack',value:'slack'},{label:'Telegram',value:'telegram'},{label:'Discord',value:'discord'},{label:'WhatsApp',value:'whatsapp'},{label:'Feishu',value:'feishu'},{label:'DingTalk',value:'dingtalk'}]} />
+          {/* Default Channel removed — employees connect IM via Portal self-service pairing */}
         </div>}
       </Modal>
 
@@ -533,11 +533,7 @@ export default function Positions() {
         <div className="space-y-4">
           <Input label="Position Name" value={newName} onChange={setNewName} placeholder="e.g. Solutions Architect" />
           <Select label="Department" value={newDept} onChange={setNewDept} options={deptOptions} placeholder="Select department" />
-          <Select label="Default Channel" value={newChannel} onChange={setNewChannel} options={[
-            { label: 'Slack', value: 'slack' }, { label: 'Telegram', value: 'telegram' },
-            { label: 'WhatsApp', value: 'whatsapp' }, { label: 'Discord', value: 'discord' },
-            { label: 'Feishu', value: 'feishu' }, { label: 'DingTalk', value: 'dingtalk' },
-          ]} />
+          {/* Default Channel removed — employees connect IM via Portal self-service pairing */}
           <div>
             <label className="block text-xs font-medium text-text-secondary mb-1.5">Tool Permissions</label>
             <div className="flex flex-wrap gap-2">

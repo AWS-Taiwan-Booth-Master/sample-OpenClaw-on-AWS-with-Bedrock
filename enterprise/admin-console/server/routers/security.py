@@ -14,8 +14,11 @@ from pydantic import BaseModel
 
 import db
 import s3ops
+import threading
+
 from shared import (
-    require_role, ssm_client, bump_config_version,
+    require_role, ssm_client, bump_config_version, audit_soul_change,
+    stop_employee_session,
     GATEWAY_REGION, STACK_NAME, DYNAMODB_REGION, DYNAMODB_TABLE,
 )
 
@@ -38,11 +41,13 @@ def get_global_soul(authorization: str = Header(default="")):
 
 @router.put("/api/v1/security/global-soul")
 def put_global_soul(body: dict, authorization: str = Header(default="")):
-    require_role(authorization, roles=["admin"])
+    user = require_role(authorization, roles=["admin"])
     bucket = s3ops.bucket()
+    content = body.get("content", "")
     s3ops._client().put_object(Bucket=bucket, Key="_shared/soul/global/SOUL.md",
-                               Body=body.get("content", "").encode(), ContentType="text/markdown")
+                               Body=content.encode(), ContentType="text/markdown")
     bump_config_version()
+    audit_soul_change(user, "global", "global", len(content))
     return {"saved": True}
 
 
@@ -60,11 +65,13 @@ def get_position_soul(pos_id: str, authorization: str = Header(default="")):
 
 @router.put("/api/v1/security/positions/{pos_id}/soul")
 def put_position_soul(pos_id: str, body: dict, authorization: str = Header(default="")):
-    require_role(authorization, roles=["admin"])
+    user = require_role(authorization, roles=["admin"])
     bucket = s3ops.bucket()
+    content = body.get("content", "")
     s3ops._client().put_object(Bucket=bucket, Key=f"_shared/soul/positions/{pos_id}/SOUL.md",
-                               Body=body.get("content", "").encode(), ContentType="text/markdown")
+                               Body=content.encode(), ContentType="text/markdown")
     bump_config_version()
+    audit_soul_change(user, "position", pos_id, len(content))
     return {"saved": True}
 
 
@@ -84,8 +91,9 @@ def get_position_tools(pos_id: str, authorization: str = Header(default="")):
 
 @router.put("/api/v1/security/positions/{pos_id}/tools")
 def put_position_tools(pos_id: str, body: dict, authorization: str = Header(default="")):
-    """Write tool permissions for a position to DynamoDB POS# record."""
-    require_role(authorization, roles=["admin"])
+    """Write tool permissions for a position to DynamoDB POS# record.
+    Triggers config version bump + force refresh for affected employees."""
+    user = require_role(authorization, roles=["admin"])
     tools = body.get("tools", [])
     try:
         import boto3 as _b3_sec
@@ -98,68 +106,104 @@ def put_position_tools(pos_id: str, body: dict, authorization: str = Header(defa
         )
     except Exception as e:
         print(f"[security] position tools write failed: {e}")
-    emps = db.get_employees()
-    return {"saved": True, "propagated": len([e for e in emps if e.get("positionId") == pos_id])}
+
+    # Audit trail
+    db.create_audit_entry({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "eventType": "tool_permission_change",
+        "actorId": user.employee_id,
+        "actorName": user.name,
+        "targetType": "position",
+        "targetId": pos_id,
+        "detail": f"Tool allowlist changed for {pos_id}: {tools}",
+        "status": "success",
+    })
+
+    # Config version bump → workspace_assembler regenerates Plan A context block
+    bump_config_version()
+
+    # Force refresh affected employees
+    refreshed = []
+    for emp in db.get_employees():
+        if emp.get("positionId") == pos_id and emp.get("agentId"):
+            threading.Thread(target=stop_employee_session, args=(emp["id"],), daemon=True).start()
+            refreshed.append(emp["id"])
+
+    return {"saved": True, "tools": tools, "refreshed": refreshed}
 
 
 # ── Runtime Assignment ───────────────────────────────────────────────────
 
 @router.get("/api/v1/security/positions/{pos_id}/runtime")
 def get_position_runtime(pos_id: str, authorization: str = Header(default="")):
+    """Read runtime assignment from DynamoDB CONFIG#routing (SSM fallback)."""
     require_role(authorization, roles=["admin"])
-    try:
-        import boto3 as _b3pr
-        ssm = _b3pr.client("ssm", region_name=GATEWAY_REGION)
-        resp = ssm.get_parameter(Name=f"/openclaw/{STACK_NAME}/positions/{pos_id}/runtime-id")
-        return {"posId": pos_id, "runtimeId": resp["Parameter"]["Value"]}
-    except Exception:
-        return {"posId": pos_id, "runtimeId": None}
+    cfg = db.get_routing_config()
+    runtime_id = cfg.get("position_runtime", {}).get(pos_id)
+    if not runtime_id:
+        # SSM fallback for pre-migration data
+        try:
+            import boto3 as _b3pr
+            ssm = _b3pr.client("ssm", region_name=GATEWAY_REGION)
+            resp = ssm.get_parameter(Name=f"/openclaw/{STACK_NAME}/positions/{pos_id}/runtime-id")
+            runtime_id = resp["Parameter"]["Value"]
+        except Exception:
+            pass
+    return {"posId": pos_id, "runtimeId": runtime_id}
 
 
 @router.put("/api/v1/security/positions/{pos_id}/runtime")
 def put_position_runtime(pos_id: str, body: dict, authorization: str = Header(default="")):
-    """Assign a runtime to a position. Propagates to all employees."""
-    require_role(authorization, roles=["admin"])
+    """Assign a runtime to a position. Dual-write: DynamoDB + SSM.
+    Force refresh affected employees so they route to new runtime immediately."""
+    user = require_role(authorization, roles=["admin"])
     runtime_id = body.get("runtimeId", "")
     if not runtime_id:
         raise HTTPException(400, "runtimeId required")
-    import boto3 as _b3pr2
-    ssm = _b3pr2.client("ssm", region_name=GATEWAY_REGION)
-    ssm.put_parameter(
-        Name=f"/openclaw/{STACK_NAME}/positions/{pos_id}/runtime-id",
-        Value=runtime_id, Type="String", Overwrite=True,
-    )
-    emps = db.get_employees()
-    propagated = []
-    for emp in emps:
-        if emp.get("positionId") == pos_id:
-            try:
-                ssm.put_parameter(
-                    Name=f"/openclaw/{STACK_NAME}/tenants/{emp['id']}/runtime-id",
-                    Value=runtime_id, Type="String", Overwrite=True,
-                )
-                propagated.append(emp["id"])
-            except Exception as e:
-                print(f"[position-runtime] emp {emp['id']} failed: {e}")
+
+    # DynamoDB: Tenant Router reads CONFIG#routing for position→runtime mapping
+    db.set_position_runtime(pos_id, runtime_id)
+
+    # SSM: backward compat + default runtime fallback
+    try:
+        import boto3 as _b3pr2
+        ssm = _b3pr2.client("ssm", region_name=GATEWAY_REGION)
+        ssm.put_parameter(
+            Name=f"/openclaw/{STACK_NAME}/positions/{pos_id}/runtime-id",
+            Value=runtime_id, Type="String", Overwrite=True,
+        )
+    except Exception as e:
+        print(f"[position-runtime] SSM write failed (non-fatal): {e}")
+
+    # Force refresh affected employees
+    refreshed = []
+    for emp in db.get_employees():
+        if emp.get("positionId") == pos_id and emp.get("agentId"):
+            threading.Thread(target=stop_employee_session, args=(emp["id"],), daemon=True).start()
+            refreshed.append(emp["id"])
+
     db.create_audit_entry({
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "eventType": "config_change",
-        "actorId": "admin",
-        "actorName": "Admin",
+        "actorId": user.employee_id,
+        "actorName": user.name,
         "targetType": "runtime_assignment",
-        "targetId": f"{pos_id} → {runtime_id}",
-        "detail": f"Position {pos_id} assigned to runtime {runtime_id}. Propagated to {len(propagated)} employees.",
+        "targetId": f"{pos_id} -> {runtime_id}",
+        "detail": f"Position {pos_id} assigned to runtime {runtime_id}. Refreshed {len(refreshed)} agents.",
         "status": "success",
     })
-    return {"saved": True, "posId": pos_id, "runtimeId": runtime_id, "propagated": propagated}
+    return {"saved": True, "posId": pos_id, "runtimeId": runtime_id, "refreshed": refreshed}
 
 
 @router.delete("/api/v1/security/positions/{pos_id}/runtime")
 def delete_position_runtime(pos_id: str, authorization: str = Header(default="")):
     require_role(authorization, roles=["admin"])
-    import boto3 as _b3pr3
-    ssm = _b3pr3.client("ssm", region_name=GATEWAY_REGION)
+    # DynamoDB
+    db.remove_position_runtime(pos_id)
+    # SSM cleanup
     try:
+        import boto3 as _b3pr3
+        ssm = _b3pr3.client("ssm", region_name=GATEWAY_REGION)
         ssm.delete_parameter(Name=f"/openclaw/{STACK_NAME}/positions/{pos_id}/runtime-id")
     except Exception:
         pass
@@ -168,22 +212,189 @@ def delete_position_runtime(pos_id: str, authorization: str = Header(default="")
 
 @router.get("/api/v1/security/position-runtime-map")
 def get_position_runtime_map(authorization: str = Header(default="")):
+    """Read full position→runtime map from DynamoDB (single call)."""
     require_role(authorization, roles=["admin"])
-    import boto3 as _b3prm
-    ssm = _b3prm.client("ssm", region_name=GATEWAY_REGION)
-    result = {}
+    cfg = db.get_routing_config()
+    return {"map": cfg.get("position_runtime", {})}
+
+
+@router.put("/api/v1/security/positions/{pos_id}/deploy-mode")
+def set_position_deploy_mode(pos_id: str, body: dict, authorization: str = Header(default="")):
+    """Set a position's deployment mode: 'serverless' (AgentCore) or 'fargate' (always-on).
+
+    When set to 'fargate', Tenant Router routes employees in this position to
+    the Fargate tier service instead of AgentCore Runtime.
+    The tier is derived from the position's runtime assignment (standard/restricted/engineering/executive).
+    """
+    user = require_role(authorization, roles=["admin"])
+    deploy_mode = body.get("deployMode", "serverless")
+    if deploy_mode not in ("serverless", "fargate"):
+        raise HTTPException(400, "deployMode must be 'serverless' or 'fargate'")
+
+    fargate_tier = body.get("fargateTier", "")  # optional explicit tier override
+
+    db.update_position(pos_id, {"deployMode": deploy_mode, "fargateTier": fargate_tier})
+    db.bump_config_version()
+
+    # Force refresh affected employees so routing changes take effect
+    refreshed = []
+    for emp in db.get_employees():
+        if emp.get("positionId") == pos_id and emp.get("agentId"):
+            threading.Thread(target=stop_employee_session, args=(emp["id"],), daemon=True).start()
+            refreshed.append(emp["id"])
+
+    db.create_audit_entry({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "eventType": "config_change",
+        "actorId": user.employee_id,
+        "actorName": user.name,
+        "targetType": "deploy_mode",
+        "targetId": pos_id,
+        "detail": f"Position {pos_id} deploy mode set to '{deploy_mode}'"
+                  + (f" (tier: {fargate_tier})" if fargate_tier else "")
+                  + f". Refreshed {len(refreshed)} agents.",
+        "status": "success",
+    })
+    return {"saved": True, "posId": pos_id, "deployMode": deploy_mode,
+            "fargateTier": fargate_tier, "refreshed": refreshed}
+
+
+@router.get("/api/v1/security/fargate/tiers")
+def get_fargate_tiers(authorization: str = Header(default="")):
+    """List Fargate tier services and their status."""
+    require_role(authorization, roles=["admin"])
+    stack = os.environ.get("STACK_NAME", "openclaw")
+    tiers = []
     try:
-        prefix = f"/openclaw/{STACK_NAME}/positions/"
-        paginator = ssm.get_paginator("get_parameters_by_path")
-        for page in paginator.paginate(Path=prefix, Recursive=True):
-            for p in page["Parameters"]:
-                name = p["Name"].replace(prefix, "")
-                if name.endswith("/runtime-id"):
-                    pos_id = name.replace("/runtime-id", "")
-                    result[pos_id] = p["Value"]
+        import boto3 as _b3ft
+        ecs = _b3ft.client("ecs", region_name=GATEWAY_REGION)
+        ssm = _b3ft.client("ssm", region_name=GATEWAY_REGION)
+        cluster = f"{stack}-always-on"
+
+        for tier_name in ("standard", "restricted", "engineering", "executive"):
+            service_name = f"{stack}-tier-{tier_name}"
+            tier_info = {"name": tier_name, "serviceName": service_name,
+                         "running": False, "desiredCount": 0, "endpoint": None}
+            try:
+                desc = ecs.describe_services(cluster=cluster, services=[service_name])
+                active = [s for s in desc.get("services", []) if s["status"] == "ACTIVE"]
+                if active:
+                    svc = active[0]
+                    tier_info["desiredCount"] = svc.get("desiredCount", 0)
+                    tier_info["runningCount"] = svc.get("runningCount", 0)
+                    tier_info["running"] = svc.get("runningCount", 0) > 0
+            except Exception:
+                pass
+            try:
+                r = ssm.get_parameter(Name=f"/openclaw/{stack}/fargate/tier-{tier_name}/endpoint")
+                tier_info["endpoint"] = r["Parameter"]["Value"]
+            except Exception:
+                pass
+            tiers.append(tier_info)
     except Exception as e:
-        print(f"[position-runtime-map] {e}")
-    return {"map": result}
+        print(f"[fargate-tiers] Error: {e}")
+    return {"tiers": tiers}
+
+
+@router.post("/api/v1/security/fargate/tiers/{tier_name}/activate")
+def activate_fargate_tier(tier_name: str, authorization: str = Header(default="")):
+    """Activate a Fargate tier service by scaling desiredCount to 1."""
+    require_role(authorization, roles=["admin"])
+    stack = os.environ.get("STACK_NAME", "openclaw")
+    service_name = f"{stack}-tier-{tier_name}"
+    try:
+        import boto3 as _b3at
+        ecs = _b3at.client("ecs", region_name=GATEWAY_REGION)
+        ecs.update_service(
+            cluster=f"{stack}-always-on",
+            service=service_name,
+            desiredCount=1,
+        )
+        db.create_audit_entry({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "eventType": "config_change",
+            "actorId": "admin",
+            "actorName": "Admin",
+            "targetType": "fargate_tier",
+            "targetId": tier_name,
+            "detail": f"Fargate tier '{tier_name}' activated (desiredCount=1)",
+            "status": "success",
+        })
+        return {"activated": True, "tier": tier_name, "serviceName": service_name}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to activate tier: {e}")
+
+
+@router.post("/api/v1/security/fargate/tiers/{tier_name}/deactivate")
+def deactivate_fargate_tier(tier_name: str, authorization: str = Header(default="")):
+    """Deactivate a Fargate tier service by scaling desiredCount to 0."""
+    require_role(authorization, roles=["admin"])
+    stack = os.environ.get("STACK_NAME", "openclaw")
+    service_name = f"{stack}-tier-{tier_name}"
+    try:
+        import boto3 as _b3dt
+        ecs = _b3dt.client("ecs", region_name=GATEWAY_REGION)
+        ecs.update_service(
+            cluster=f"{stack}-always-on",
+            service=service_name,
+            desiredCount=0,
+        )
+        return {"deactivated": True, "tier": tier_name, "serviceName": service_name}
+    except Exception as e:
+        raise HTTPException(500, f"Failed to deactivate tier: {e}")
+
+
+@router.get("/api/v1/security/fargate/overview")
+def get_fargate_overview(authorization: str = Header(default="")):
+    """Overview of ALL always-on employees — for Security Center Fargate panel."""
+    require_role(authorization, roles=["admin"])
+    employees = db.get_employees()
+    agents = db.get_agents()
+    agent_map = {a["id"]: a for a in agents}
+
+    always_on = []
+    for emp in employees:
+        if not emp.get("alwaysOnEnabled"):
+            continue
+        agent = agent_map.get(emp.get("agentId", ""), {})
+        always_on.append({
+            "employeeId": emp["id"],
+            "employeeName": emp.get("name", ""),
+            "positionName": emp.get("positionName", ""),
+            "tier": emp.get("alwaysOnTier", "standard"),
+            "serviceName": emp.get("alwaysOnServiceName", ""),
+            "status": agent.get("containerStatus", "unknown"),
+            "deployMode": agent.get("deployMode", "serverless"),
+            "imChannels": list((emp.get("imCredentials") or {}).keys()),
+        })
+
+    return {"alwaysOnAgents": always_on, "count": len(always_on)}
+
+
+@router.put("/api/v1/security/positions/{pos_id}/im-platforms")
+def set_position_im_platforms(pos_id: str, body: dict, authorization: str = Header(default="")):
+    """Set allowed IM platforms for a position. Employees in this position
+    can only connect IM channels from the allowed list."""
+    user = require_role(authorization, roles=["admin"])
+    platforms = body.get("allowedIMPlatforms", [])
+    valid = {"feishu", "telegram", "discord", "slack", "whatsapp", "teams", "dingtalk", "googlechat"}
+    invalid = [p for p in platforms if p not in valid]
+    if invalid:
+        raise HTTPException(400, f"Invalid platforms: {invalid}. Valid: {sorted(valid)}")
+
+    db.update_position(pos_id, {"allowedIMPlatforms": platforms})
+
+    db.create_audit_entry({
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "eventType": "config_change",
+        "actorId": user.employee_id,
+        "actorName": user.name,
+        "targetType": "im_platforms",
+        "targetId": pos_id,
+        "detail": f"IM platforms for {pos_id}: {platforms}",
+        "status": "success",
+    })
+    return {"saved": True, "positionId": pos_id, "allowedIMPlatforms": platforms}
 
 
 # ── Runtimes (AgentCore) ─────────────────────────────────────────────────
@@ -304,7 +515,29 @@ def update_runtime_config(runtime_id: str, body: dict, authorization: str = Head
             kwargs["protocolConfiguration"] = detail["protocolConfiguration"]
 
         ac.update_agent_runtime(**kwargs)
-        return {"saved": True, "runtimeId": runtime_id}
+
+        # Force refresh all agents using this runtime
+        routing = db.get_routing_config()
+        affected_positions = [pid for pid, rid in routing.get("position_runtime", {}).items()
+                              if rid == runtime_id]
+        refreshed = []
+        for emp in db.get_employees():
+            if emp.get("positionId") in affected_positions and emp.get("agentId"):
+                threading.Thread(target=stop_employee_session, args=(emp["id"],), daemon=True).start()
+                refreshed.append(emp["id"])
+
+        db.create_audit_entry({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "eventType": "runtime_config_change",
+            "actorId": "admin",
+            "actorName": "Admin",
+            "targetType": "runtime",
+            "targetId": runtime_id,
+            "detail": f"Runtime config updated. Refreshed {len(refreshed)} agents.",
+            "status": "success",
+        })
+
+        return {"saved": True, "runtimeId": runtime_id, "refreshed": refreshed}
     except Exception as e:
         raise HTTPException(500, str(e))
 
@@ -316,7 +549,7 @@ class CreateRuntimeRequest(BaseModel):
     networkMode: str = "PUBLIC"
     securityGroupIds: list = []
     subnetIds: list = []
-    modelId: str = "global.amazon.nova-2-lite-v1:0"
+    modelId: str = "global.anthropic.claude-sonnet-4-5-20250929-v1:0"
     idleTimeoutSec: int = 900
     maxLifetimeSec: int = 28800
 

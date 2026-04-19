@@ -79,10 +79,14 @@ def _resolve_bot_tokens(stack: str, agent_id: str) -> tuple:
 
 def _build_agent_env(agent: dict, agent_id: str, stack: str, bucket: str,
                      ddb_table: str, ddb_region: str,
-                     telegram_token: str, discord_token: str) -> list:
+                     telegram_token: str, discord_token: str,
+                     tier: str = "standard") -> list:
     """Build environment variable list for ECS container."""
     emp_id = agent.get("employeeId", agent_id)
     session_id = f"personal__{emp_id}" if agent.get("employeeId") else f"shared__{agent_id}"
+
+    model, guardrail, _, _ = _TIER_DEFAULTS.get(tier, _TIER_DEFAULTS["standard"])
+
     return [
         {"name": "SESSION_ID",         "value": session_id},
         {"name": "SHARED_AGENT_ID",    "value": agent_id},
@@ -93,6 +97,9 @@ def _build_agent_env(agent: dict, agent_id: str, stack: str, bucket: str,
         {"name": "DYNAMODB_REGION",    "value": ddb_region},
         {"name": "SYNC_INTERVAL",      "value": "120"},
         {"name": "EFS_ENABLED",        "value": "true"},
+        {"name": "BEDROCK_MODEL_ID",   "value": model},
+        {"name": "GUARDRAIL_ID",       "value": guardrail},
+        {"name": "FARGATE_TIER",       "value": tier},
         {"name": "TELEGRAM_BOT_TOKEN", "value": telegram_token},
         {"name": "DISCORD_BOT_TOKEN",  "value": discord_token},
     ]
@@ -102,6 +109,103 @@ def _ecs_service_name(agent_id: str) -> str:
     """Derive ECS service name from agent_id (must be DNS-compatible)."""
     import re as _re_svc
     return _re_svc.sub(r"[^a-zA-Z0-9-]", "-", agent_id)[:32]
+
+
+# ── Per-tier config resolution ────────────────────────────────────────────
+
+# Tier → (model, guardrail_id, cpu, memory)
+_TIER_DEFAULTS = {
+    "standard":    ("minimax.minimax-m2.5",  "", "256", "512"),
+    "restricted":  ("deepseek.v3.2",         "", "256", "512"),
+    "engineering": ("global.anthropic.claude-sonnet-4-5-20250929-v1:0", "", "512", "1024"),
+    "executive":   ("global.anthropic.claude-sonnet-4-6", "", "512", "1024"),
+}
+
+
+def _resolve_tier(emp_id: str) -> str:
+    """Resolve employee's tier from position → routing config."""
+    emp = db.get_employee(emp_id)
+    if not emp:
+        return "standard"
+    pos_id = emp.get("positionId", "")
+    if not pos_id:
+        return "standard"
+    routing = db.get_routing_config()
+    runtime_name = routing.get("position_runtime", {}).get(pos_id, "")
+    if runtime_name:
+        rn = runtime_name.lower()
+        for t in ("restricted", "engineering", "executive"):
+            if t in rn:
+                return t
+    return "standard"
+
+
+def _get_tier_role_arn(stack: str, tier: str) -> str:
+    """Get per-tier Task Role ARN from CloudFormation outputs."""
+    output_key = f"AlwaysOnRole{tier.capitalize()}Arn"
+    try:
+        resp = boto3.client("cloudformation", region_name=GATEWAY_REGION).describe_stacks(
+            StackName=stack)
+        for out in resp["Stacks"][0].get("Outputs", []):
+            if out["OutputKey"] == output_key:
+                return out["OutputValue"]
+    except Exception:
+        pass
+    # Fallback to naming convention
+    return f"arn:aws:iam::{GATEWAY_ACCOUNT_ID}:role/{stack}-ecs-role-{tier}"
+
+
+def _get_tier_sg(stack: str, tier: str) -> str:
+    """Get per-tier Security Group ID from CloudFormation outputs."""
+    output_key = f"AlwaysOnSG{tier.capitalize()}Id"
+    try:
+        resp = boto3.client("cloudformation", region_name=GATEWAY_REGION).describe_stacks(
+            StackName=stack)
+        for out in resp["Stacks"][0].get("Outputs", []):
+            if out["OutputKey"] == output_key:
+                return out["OutputValue"]
+    except Exception:
+        pass
+    # Fallback: use shared SG
+    ecs_cfg = _get_ecs_config()
+    return ecs_cfg.get("sg_id", "")
+
+
+def _create_access_point(efs_id: str, emp_id: str) -> str:
+    """Create EFS Access Point for an employee (idempotent — returns existing if found)."""
+    efs = boto3.client("efs", region_name=GATEWAY_REGION)
+
+    # Check if Access Point already exists for this employee
+    try:
+        existing = efs.describe_access_points(FileSystemId=efs_id)
+        for ap in existing.get("AccessPoints", []):
+            root = ap.get("RootDirectory", {}).get("Path", "")
+            if root == f"/{emp_id}":
+                print(f"[always-on] Access Point already exists for {emp_id}: {ap['AccessPointId']}")
+                return ap["AccessPointId"]
+    except Exception:
+        pass
+
+    # Create new Access Point
+    resp = efs.create_access_point(
+        FileSystemId=efs_id,
+        PosixUser={"Uid": 1000, "Gid": 1000},
+        RootDirectory={
+            "Path": f"/{emp_id}",
+            "CreationInfo": {
+                "OwnerUid": 1000,
+                "OwnerGid": 1000,
+                "Permissions": "755",
+            },
+        },
+        Tags=[
+            {"Key": "employee", "Value": emp_id},
+            {"Key": "stack", "Value": os.environ.get("STACK_NAME", "openclaw")},
+        ],
+    )
+    ap_id = resp["AccessPointId"]
+    print(f"[always-on] Created Access Point for {emp_id}: {ap_id}")
+    return ap_id
 
 
 @router.post("/api/v1/admin/always-on/{agent_id}/start")
@@ -125,9 +229,17 @@ def start_always_on_agent(agent_id: str, authorization: str = Header(default="")
             "ECS_SUBNET_ID and ECS_TASK_SG_ID are required. "
             "Set them in /etc/openclaw/env or run the deploy script to write them to SSM.")
 
+    # Resolve per-tier config
+    emp_id = agent.get("employeeId", agent_id)
+    tier = _resolve_tier(emp_id)
+    _, _, tier_cpu, tier_memory = _TIER_DEFAULTS.get(tier, _TIER_DEFAULTS["standard"])
+    tier_role_arn = _get_tier_role_arn(stack, tier)
+    tier_sg = _get_tier_sg(stack, tier)
+
     telegram_token, discord_token = _resolve_bot_tokens(stack, agent_id)
     env_vars = _build_agent_env(agent, agent_id, stack, bucket,
-                                ddb_table, ddb_region, telegram_token, discord_token)
+                                ddb_table, ddb_region, telegram_token, discord_token,
+                                tier=tier)
     service_name = _ecs_service_name(agent_id)
 
     try:
@@ -145,6 +257,21 @@ def start_always_on_agent(agent_id: str, authorization: str = Header(default="")
         except Exception:
             pass
 
+        # Create EFS Access Point for this employee (idempotent)
+        efs_id = ""
+        access_point_id = ""
+        try:
+            efs_id_resp = boto3.client("cloudformation", region_name=GATEWAY_REGION).describe_stacks(
+                StackName=stack)
+            for out in efs_id_resp["Stacks"][0].get("Outputs", []):
+                if out["OutputKey"] == "AlwaysOnEFSId":
+                    efs_id = out["OutputValue"]
+                    break
+            if efs_id:
+                access_point_id = _create_access_point(efs_id, emp_id)
+        except Exception as e:
+            print(f"[always-on] Access Point creation failed (non-fatal): {e}")
+
         # Check if service already exists
         service_exists = False
         try:
@@ -155,9 +282,7 @@ def start_always_on_agent(agent_id: str, authorization: str = Header(default="")
         except Exception:
             pass
 
-        # Register a new Task Definition revision with agent-specific env vars.
-        # ECS Services don't support runtime overrides like RunTask does —
-        # the environment must be baked into the task definition.
+        # Register a new Task Definition revision with per-employee config.
         base_td = ecs.describe_task_definition(taskDefinition=ecs_cfg["task_def"])["taskDefinition"]
 
         # Clean container definitions: remove fields that register_task_definition rejects
@@ -170,17 +295,37 @@ def start_always_on_agent(agent_id: str, authorization: str = Header(default="")
                 clean_cd["environment"] = env_vars
             clean_containers.append(clean_cd)
 
+        # Build volumes — use Access Point if created
+        volumes = base_td.get("volumes", [])
+        if access_point_id:
+            volumes = []
+            for v in base_td.get("volumes", []):
+                if v.get("name") == "always-on-workspace":
+                    v = {
+                        "name": "always-on-workspace",
+                        "efsVolumeConfiguration": {
+                            "fileSystemId": efs_id,
+                            "rootDirectory": "/",
+                            "transitEncryption": "ENABLED",
+                            "authorizationConfig": {
+                                "accessPointId": access_point_id,
+                                "iam": "ENABLED",
+                            },
+                        },
+                    }
+                volumes.append(v)
+
         agent_family = f"{stack}-ao-{service_name}"
         agent_td = ecs.register_task_definition(
             family=agent_family,
-            taskRoleArn=base_td["taskRoleArn"],
+            taskRoleArn=tier_role_arn,
             executionRoleArn=base_td["executionRoleArn"],
             networkMode="awsvpc",
             containerDefinitions=clean_containers,
-            volumes=base_td.get("volumes", []),
+            volumes=volumes,
             requiresCompatibilities=["FARGATE"],
-            cpu=base_td.get("cpu", "512"),
-            memory=base_td.get("memory", "1024"),
+            cpu=tier_cpu,
+            memory=tier_memory,
             runtimePlatform={"cpuArchitecture": "ARM64", "operatingSystemFamily": "LINUX"},
         )
         agent_td_arn = agent_td["taskDefinition"]["taskDefinitionArn"]
@@ -197,7 +342,8 @@ def start_always_on_agent(agent_id: str, authorization: str = Header(default="")
             )
             print(f"[always-on] Updated service {service_name} to desiredCount=1")
         else:
-            # Create new service
+            # Create new service with per-tier Security Group
+            sg_to_use = tier_sg or ecs_cfg["sg_id"]
             ecs.create_service(
                 cluster=ecs_cfg["cluster"],
                 serviceName=service_name,
@@ -207,12 +353,14 @@ def start_always_on_agent(agent_id: str, authorization: str = Header(default="")
                 networkConfiguration={
                     "awsvpcConfiguration": {
                         "subnets":        [ecs_cfg["subnet_id"]],
-                        "securityGroups": [ecs_cfg["sg_id"]],
+                        "securityGroups": [sg_to_use],
                         "assignPublicIp": "ENABLED",
                     }
                 },
                 tags=[
                     {"key": "agent_id",   "value": agent_id},
+                    {"key": "employee_id", "value": emp_id},
+                    {"key": "tier",       "value": tier},
                     {"key": "stack_name", "value": stack},
                 ],
             )
@@ -221,19 +369,39 @@ def start_always_on_agent(agent_id: str, authorization: str = Header(default="")
     except Exception as e:
         raise HTTPException(500, f"Failed to start ECS service: {e}")
 
-    # Update DynamoDB status
+    # Update DynamoDB — AGENT# + EMP# records
     try:
         ddb = boto3.resource("dynamodb", region_name=ddb_region)
-        ddb.Table(ddb_table).update_item(
+        table = ddb.Table(ddb_table)
+        table.update_item(
             Key={"PK": "ORG#acme", "SK": f"AGENT#{agent_id}"},
-            UpdateExpression="SET deployMode = :m, containerStatus = :s, ecsServiceName = :sn",
-            ExpressionAttributeValues={":m": "always-on-ecs", ":s": "starting", ":sn": service_name},
+            UpdateExpression="SET deployMode = :m, containerStatus = :s, ecsServiceName = :sn, alwaysOnTier = :t",
+            ExpressionAttributeValues={
+                ":m": "always-on-ecs", ":s": "starting", ":sn": service_name, ":t": tier,
+            },
         )
+        # Also update EMP# record for quick lookup
+        if emp_id:
+            table.update_item(
+                Key={"PK": "ORG#acme", "SK": f"EMP#{emp_id}"},
+                UpdateExpression="SET alwaysOnEnabled = :e, alwaysOnTier = :t, alwaysOnServiceName = :sn, alwaysOnAccessPointId = :ap",
+                ExpressionAttributeValues={
+                    ":e": True, ":t": tier, ":sn": service_name,
+                    ":ap": access_point_id or "",
+                },
+            )
     except Exception as e:
         print(f"[always-on] DynamoDB update failed: {e}")
 
-    return {"started": True, "agentId": agent_id, "serviceName": service_name,
-            "note": "ECS Service created/scaled. Container starts in ~30s with auto-restart."}
+    return {
+        "started": True, "agentId": agent_id, "employeeId": emp_id,
+        "serviceName": service_name, "tier": tier,
+        "taskRole": tier_role_arn.split("/")[-1],
+        "securityGroup": tier_sg or ecs_cfg["sg_id"],
+        "accessPoint": access_point_id,
+        "cpu": tier_cpu, "memory": tier_memory,
+        "note": f"ECS Service created ({tier} tier, {tier_cpu} CPU / {tier_memory} MB). Container starts in ~30s.",
+    }
 
 
 @router.post("/api/v1/admin/always-on/{agent_id}/stop")
