@@ -946,6 +946,34 @@ Resources:
                   npm install -g openclaw-wechat@latest --timeout=60000 2>/dev/null || echo "WeChat plugin install skipped"
                   '
 
+                  # Filter Bedrock model auto-discovery cache: remove foundation model IDs
+                  # for Claude 4.x/newer that require inference profiles (global.*/us.*) for
+                  # on-demand invocation. Without this, the /model dropdown in Discord/Slack
+                  # shows unusable IDs like "anthropic.claude-opus-4-7" which fail with:
+                  # "Invocation of model ID X with on-demand throughput isn't supported".
+                  echo "[8.6/9] Filtering model cache (remove on-demand-unsupported IDs)..."
+                  MODELS_CACHE="$STATE_DIR/agents/main/agent/models.json"
+                  if [ -f "$MODELS_CACHE" ]; then
+                    sudo -u ubuntu python3 -c "
+                  import json, re
+                  p = '$MODELS_CACHE'
+                  with open(p) as f:
+                      d = json.load(f)
+                  ms = d.get('providers', {}).get('amazon-bedrock', {}).get('models', [])
+                  # Remove Claude 4+ foundation model IDs (no global./us. prefix)
+                  # These require inference profiles for on-demand invocation.
+                  pat = re.compile(r'^anthropic\.claude-(opus|sonnet|haiku)-[4-9]')
+                  before = len(ms)
+                  ms = [m for m in ms if not pat.match(m.get('id', ''))]
+                  d['providers']['amazon-bedrock']['models'] = ms
+                  with open(p, 'w') as f:
+                      json.dump(d, f, indent=2)
+                  print(f'Removed {before - len(ms)} on-demand-unsupported model entries')
+                  " || echo "Model cache filter skipped (cache not yet populated or error)"
+                  else
+                    echo "Model cache not yet generated; will be filtered on next run"
+                  fi
+
                   # Copy SOUL.md
                   cp /opt/openclaw/SOUL.md "$STATE_DIR/SOUL.md"
                   chown ubuntu:ubuntu "$STATE_DIR/SOUL.md"
